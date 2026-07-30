@@ -321,61 +321,55 @@ check "--list-themes works with no input" \
 section "gallery"
 
 GDIR="$WORK/gallery"; mkdir -p "$GDIR"
-GROWS=()
+GROWS=(); GN=0
 
-# one labelled strip: every color as a swatch, caption underneath
+# Build a fixture for real and turn its 1x output into a labelled strip. The
+# swatches ARE repixel's output, not a re-derivation of it, so the picture
+# cannot drift from what the script actually does.
+# args: label fixture palette [extra repixel flags...]
 strip() {
-  local out="$1" label="$2"; shift 2
-  local -a sw=(); local c
-  for c in "$@"; do sw+=(-size 132x88 "xc:#$c"); done
-  magick "${sw[@]}" +append -bordercolor white -border 2 "$out.band.png"
+  local label="$1" fixture="$2" palette="$3"; shift 3
+  local o="$GDIR/o$GN" out="$GDIR/r$GN.png"; GN=$((GN+1))
+  run "$FIX/$fixture" -p "$palette" -o "$o" --formats apng "$@" >/dev/null
+  local src; src="$(ls "$o"/*/*/*_1x.png 2>/dev/null | head -1)"
+  [[ -n "$src" ]] || { no "gallery: nothing built for $label"; return 0; }
+  # stretch to a fixed width: each shade becomes an equal band regardless of
+  # how many there are, so rows line up down the page
+  magick "$src" -scale 1040x76! -bordercolor white -border 2 "$out.band.png"
   if [[ -n "$FONT" ]]; then
-    magick -background white -fill '#222222' -font "$FONT" -pointsize 17 \
-      label:"$label" -bordercolor white -border 6 "$out.lbl.png"
+    magick -background white -fill '#222222' -font "$FONT" -pointsize 16 \
+      label:"$label" -bordercolor white -border 5 "$out.lbl.png"
     magick "$out.lbl.png" "$out.band.png" -background white -gravity west \
       -append "$out"
   else
-    cp "$out.band.png" "$out"
+    mv "$out.band.png" "$out"
   fi
   rm -f "$out.band.png" "$out.lbl.png"
   GROWS+=("$out")
 }
 
-# what repixel itself says the palette becomes — the gallery renders the
-# script's real answer, never a copy of the maths kept in the test
-fitted() {
-  "$REPIXEL" --themes "$THEMES" -p "$1" --preview-fit "$2" --mix "${3:-oklab}" \
-    | cut -f2 | tr ',' ' '
-}
-
 heading() {
   [[ -n "$FONT" ]] || return 0
-  local out="$GDIR/h$RANDOM.png"
-  magick -background white -fill black -font "$FONT" -pointsize 22 \
+  local out="$GDIR/h$GN.png"; GN=$((GN+1))
+  magick -background white -fill black -font "$FONT" -pointsize 21 \
     label:"$1" -bordercolor white -border 10 "$out"
   GROWS+=("$out")
 }
 
-P4="171F41,2F7077,FB6C76,FEEDE3"
-
-heading "Fitting: 4-colour palette onto N shades"
-strip "$GDIR/f2.png"  "2 shades  - palette larger, snaps to real colours"   $(fitted "$P4" 2)
-strip "$GDIR/f4.png"  "4 shades  - equal, palette verbatim (bit-exact)"    $(fitted "$P4" 4)
-strip "$GDIR/f6.png"  "6 shades  - palette smaller, 2 blends added"        $(fitted "$P4" 6)
-strip "$GDIR/f8.png"  "8 shades  - palette smaller, 4 blends added"        $(fitted "$P4" 8)
+heading "Fitting: the 4-colour 'warm' palette onto N shades"
+strip "2 shades  - palette larger, snaps to real palette colours" still2.png warm
+strip "4 shades  - equal counts, palette verbatim (bit-exact)"    still4.png warm
+strip "6 shades  - palette smaller, 2 blends inserted"            still6.png warm
 
 heading "--mix: same palette, 6 shades, different blend space"
 for sp in oklab oklch srgb linear; do
-  strip "$GDIR/m-$sp.png" "$sp" $(fitted "$P4" 6 "$sp")
+  strip "$sp" still6.png warm --mix "$sp"
 done
 
-heading "mono (4 colours) vs grayscale (2 colours) at 6 shades"
-strip "$GDIR/g-mono.png" "mono      - must hit 555555 and AAAAAA on the way" \
-  $(fitted 000000,555555,AAAAAA,FFFFFF 6)
-strip "$GDIR/g-oklab.png" "grayscale - free to space evenly (oklab)" \
-  $(fitted 000000,FFFFFF 6)
-strip "$GDIR/g-srgb.png" "grayscale --mix srgb" \
-  $(fitted 000000,FFFFFF 6 srgb)
+heading "mono (4 colours) vs grayscale (2 colours), both on 6 shades"
+strip "mono      - must hit 555555 and AAAAAA on the way"  still6.png mono
+strip "grayscale - free to space evenly (oklab)"           still6.png grayscale
+strip "grayscale --mix srgb"                               still6.png grayscale --mix srgb
 
 magick "${GROWS[@]}" -background white -gravity west -append \
   -bordercolor white -border 22 "$GALLERY"

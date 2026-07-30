@@ -100,12 +100,6 @@
 #                          themes.conf beside this script  (git checkout)
 #                          ../share/repixel/themes.conf    (installed copy)
 #                        --list-themes prints which one is in use.
-#       --preview-fit N  Print what the palette(s) would become on an N-shade
-#                        source, and exit. Takes no input file — it answers
-#                        "what will this theme do to my 6-shade sprite?"
-#                        before you build anything. Honors --fit and --mix.
-#                          repixel -p dithernaut --preview-fit 6
-#                          repixel -A --preview-fit 3
 #       --reextract      Force re-extraction of source frames
 #       --list-themes    List themes and exit
 #       --list-colors    Print each source's shades (darkest->lightest) and exit
@@ -186,7 +180,6 @@ while [[ $# -gt 0 ]]; do
     -f|--fps)       FPS="$2"; shift 2;;
     --formats)      FORMATS="$2"; shift 2;;
     --themes)       THEMES="$2"; THEMES_EXPLICIT=1; shift 2;;
-    --preview-fit)  PREVIEW_FIT="$2"; shift 2;;
     --reextract)    REEXTRACT=1; shift;;
     --list-themes)  LIST_THEMES=1; shift;;
     --list-colors)  LIST_COLORS=1; shift;;
@@ -692,15 +685,8 @@ if [[ -n "$CROP" ]]; then validate_crop; fi
 # --- info modes ----------------------------------------------------
 if [[ "${LIST_THEMES:-0}" == 1 ]]; then list_themes; exit 0; fi
 
-# --preview-fit answers "what would this theme do to an N-shade source?" without
-# needing a source, so it is the one build-ish mode that takes no inputs.
-if [[ -n "${PREVIEW_FIT:-}" ]]; then
-  [[ "$PREVIEW_FIT" =~ ^[1-9][0-9]*$ ]] \
-    || die "--preview-fit needs a positive shade count (got '$PREVIEW_FIT')"
-else
-  [[ ${#INPUTS[@]} -gt 0 ]] \
-    || die "no input given — pass one or more files or directories (try --help)"
-fi
+[[ ${#INPUTS[@]} -gt 0 ]] \
+  || die "no input given — pass one or more files or directories (try --help)"
 
 # whether exactly one source was named: decides whether a bad --crop is fatal
 SINGLE_SOURCE=0
@@ -947,27 +933,6 @@ else
   exit 1
 fi
 [[ ${#PALETTES[@]} -gt 0 ]] || die "no palettes to build (empty $THEMES?)"
-
-# --- preview mode: print the fitted palette and stop ---------------
-# One line per palette: NAME<TAB>c1,c2,...  Machine-readable on purpose, so
-# the test suite and anyone scripting against it can just cut -f2.
-if [[ -n "${PREVIEW_FIT:-}" ]]; then
-  for pal in "${PALETTES[@]}"; do
-    pname="${pal%%|*}"; pcsv="${pal#*|}"
-    pn=0; IFS=',' read -ra praw <<< "$pcsv"
-    pnorm=()
-    for t in "${praw[@]}"; do pnorm+=("$(norm_hex "$t")"); pn=$((pn+1)); done
-    if [[ "$FIT" == exact && "$pn" -ne "$PREVIEW_FIT" ]]; then
-      printf '%s\t(skipped — --fit exact, %d colors vs %d shades)\n' \
-        "$pname" "$pn" "$PREVIEW_FIT"
-      continue
-    fi
-    fmode="$FIT"; [[ "$fmode" == exact ]] && fmode=auto
-    printf '%s\t%s\n' "$pname" \
-      "$(fit_palette "$(IFS=','; echo "${pnorm[*]}")" "$PREVIEW_FIT" "$fmode" "$MIX")"
-  done
-  exit 0
-fi
 
 # --- main: every source x every palette ---------------------------
 # Resolve the output directory before anything is built and say where it is:
