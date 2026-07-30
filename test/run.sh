@@ -391,6 +391,9 @@ run "$FIX/still4.png" -p mono -o "$WORK/x" --fit sideways >/dev/null 2>&1
 check "unknown --fit is rejected" "1" "$?"
 run "$FIX/still4.png" -p mono -o "$WORK/x" -x 0 >/dev/null 2>&1
 check "--scale 0 is rejected" "1" "$?"
+OUT="$(run "$FIX/still4.png" --fit 2>&1)"
+check "option without a value is rejected cleanly" \
+  "yes" "$([[ "$OUT" == *"--fit needs a value"* ]] && echo yes || echo no)"
 
 # --- scale ----------------------------------------------------------
 section "scale"

@@ -109,27 +109,31 @@ THEMES_EXPLICIT=0
 die() { echo "error: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 usage() { sed -n '2,/^set -/p' "$SELF" | sed '/^set -/d; s/^# \{0,1\}//'; exit 0; }
+option_value() {
+  (( $# >= 2 )) || die "$1 needs a value (try --help)"
+  OPTION_VALUE="$2"
+}
 
 # --- parse args ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
     # one flag, four spellings: a palette is a theme name OR a hex list, so
     # there's nothing to arbitrate between. Last one wins if repeated.
-    -t|--theme|-p|--palette|--colors) PALETTE="$2"; shift 2;;
+    -t|--theme|-p|--palette|--colors) option_value "$@"; PALETTE="$OPTION_VALUE"; shift 2;;
     -A|--all-themes) ALL_THEMES=1; shift;;
-    --fit)          FIT="$2"; shift 2;;
-    --mix)          MIX="$2"; shift 2;;
-    --sort)         SORT="$2"; shift 2;;
-    -o|--out)       OUTDIR="$2"; shift 2;;
+    --fit)          option_value "$@"; FIT="$OPTION_VALUE"; shift 2;;
+    --mix)          option_value "$@"; MIX="$OPTION_VALUE"; shift 2;;
+    --sort)         option_value "$@"; SORT="$OPTION_VALUE"; shift 2;;
+    -o|--out)       option_value "$@"; OUTDIR="$OPTION_VALUE"; shift 2;;
     -r|--recursive) RECURSIVE=1; shift;;
-    -c|--crop)      CROP="$2"; shift 2;;
-    -s|--split)     SPLIT="$2"; shift 2;;
-    -x|--scale)     SCALE_OPT="$2"; shift 2;;
-    --max-dim)      MAX_DIM="$2"; shift 2;;
-    --max-shades)   MAX_SHADES="$2"; shift 2;;
-    -f|--fps)       FPS="$2"; shift 2;;
-    --formats)      FORMATS="$2"; shift 2;;
-    --themes)       THEMES="$2"; THEMES_EXPLICIT=1; shift 2;;
+    -c|--crop)      option_value "$@"; CROP="$OPTION_VALUE"; shift 2;;
+    -s|--split)     option_value "$@"; SPLIT="$OPTION_VALUE"; shift 2;;
+    -x|--scale)     option_value "$@"; SCALE_OPT="$OPTION_VALUE"; shift 2;;
+    --max-dim)      option_value "$@"; MAX_DIM="$OPTION_VALUE"; shift 2;;
+    --max-shades)   option_value "$@"; MAX_SHADES="$OPTION_VALUE"; shift 2;;
+    -f|--fps)       option_value "$@"; FPS="$OPTION_VALUE"; shift 2;;
+    --formats)      option_value "$@"; FORMATS="$OPTION_VALUE"; shift 2;;
+    --themes)       option_value "$@"; THEMES="$OPTION_VALUE"; THEMES_EXPLICIT=1; shift 2;;
     --reextract)    REEXTRACT=1; shift;;
     --list-themes)  LIST_THEMES=1; shift;;
     --list-colors)  LIST_COLORS=1; shift;;
@@ -145,23 +149,25 @@ need ffmpeg; need magick
 # --- validate the numeric / enumerated options -----------------------
 # Doing this up front means a typo fails immediately instead of quietly
 # producing nothing an hour into a batch.
-case "$FIT" in
-  auto|nearest|ramp|exact) ;;
-  *) die "--fit must be auto, nearest, ramp or exact (got '$FIT')";;
-esac
-case "$MIX" in
-  oklab|oklch|srgb|linear) ;;
-  *) die "--mix must be oklab, oklch, srgb or linear (got '$MIX')";;
-esac
-case "$SORT" in
-  auto|lum|none) ;;
-  *) die "--sort must be auto, lum or none (got '$SORT')";;
-esac
+validate_choice() {
+  local option="$1" value="$2" choices="$3"
+  case " $choices " in
+    *" $value "*) ;;
+    *) die "$option must be ${choices// /, } (got '$value')" ;;
+  esac
+}
+validate_positive_integer() {
+  [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "$1 must be a positive integer (got '$2')"
+}
+
+validate_choice --fit "$FIT" "auto nearest ramp exact"
+validate_choice --mix "$MIX" "oklab oklch srgb linear"
+validate_choice --sort "$SORT" "auto lum none"
 [[ "$SCALE_OPT" == auto || "$SCALE_OPT" =~ ^[1-9][0-9]*$ ]] \
   || die "--scale must be a positive integer or 'auto' (got '$SCALE_OPT')"
-[[ "$MAX_DIM"    =~ ^[1-9][0-9]*$ ]] || die "--max-dim must be a positive integer (got '$MAX_DIM')"
-[[ "$MAX_SHADES" =~ ^[1-9][0-9]*$ ]] || die "--max-shades must be a positive integer (got '$MAX_SHADES')"
-[[ "$FPS"        =~ ^[1-9][0-9]*$ ]] || die "--fps must be a positive integer (got '$FPS')"
+validate_positive_integer --max-dim "$MAX_DIM"
+validate_positive_integer --max-shades "$MAX_SHADES"
+validate_positive_integer --fps "$FPS"
 
 # 'all' is a convenience for the full set; 'png' is accepted as a spelling of
 # 'apng' because the animated output *is* a .png file and asking for "png"
@@ -183,6 +189,7 @@ for _f in "${_fmts[@]}"; do
 done
 FORMATS="$(IFS=','; echo "${_norm[*]}")"
 unset _fmts _norm _f
+format_enabled() { [[ ",$FORMATS," == *",$1,"* ]]; }
 
 if (( THEMES_EXPLICIT )); then
   [[ -f "$THEMES" ]] || die "theme file not found: $THEMES"
@@ -203,13 +210,13 @@ fi
 # only disables webp output; everything else still builds.
 HAVE_WEBP_ANIM=0
 HAVE_WEBP_STILL=0
-case ",$FORMATS," in *,webp,*)
+if format_enabled webp; then
   command -v img2webp >/dev/null 2>&1 && HAVE_WEBP_ANIM=1
   command -v cwebp    >/dev/null 2>&1 && HAVE_WEBP_STILL=1
   if (( ! HAVE_WEBP_ANIM || ! HAVE_WEBP_STILL )); then
     echo "note: libwebp tools not found — skipping webp (brew install webp)" >&2
-  fi ;;
-esac
+  fi
+fi
 
 # per-frame duration in ms for webp (ffmpeg takes fps directly)
 DUR=$(( 1000 / FPS ))
@@ -788,21 +795,25 @@ webp_still() {
 segments() {
   local total="$1"
   if [[ -z "$SPLIT" ]]; then echo "1 $total "; return; fi
-  local -a pts=() rawp; local p
-  IFS=',' read -ra rawp <<< "$SPLIT"
-  for p in "${rawp[@]}"; do
-    [[ "$p" =~ ^[0-9]+$ ]] || die "invalid split frame: '$p'"
-    (( p >= 1 && p < total )) || die "split frame $p out of range (1..$((total-1)) for $total frames)"
-    pts+=("$p")
-  done
-  # sort unique
-  local sorted; sorted="$(printf '%s\n' "${pts[@]}" | sort -n -u)"
+  local sorted
+  sorted="$(printf '%s\n' "${SPLIT//,/$'\n'}" | sort -n -u)"
   local prev=1 idx=1
   while IFS= read -r p; do
     echo "$prev $((p-prev+1)) _part${idx}"
     prev=$((p+1)); idx=$((idx+1))
   done <<< "$sorted"
   echo "$prev $((total-prev+1)) _part${idx}"
+}
+
+validate_split() {
+  local total="$1" srcbase="$2" p
+  local -a points
+  IFS=',' read -ra points <<< "$SPLIT"
+  for p in "${points[@]}"; do
+    [[ "$p" =~ ^[0-9]+$ ]] || die "invalid split frame: '$p'"
+    (( p >= 1 && p < total )) \
+      || die "split frame $p out of range for $srcbase (1..$((total-1)), $total frames)"
+  done
 }
 
 # validate --crop's shape once, here in the main shell (and after the
@@ -893,14 +904,8 @@ build_variant() {
   if (( still )) && [[ -n "$SPLIT" ]]; then
     echo "   ! --split ignored — $srcbase is a single frame"
   fi
-  # up-front split validation (in the main shell, so it can die loudly)
   if (( ! still )) && [[ -n "$SPLIT" ]]; then
-    local sp; local -a sps
-    IFS=',' read -ra sps <<< "$SPLIT"
-    for sp in "${sps[@]}"; do
-      [[ "$sp" =~ ^[0-9]+$ ]] || die "invalid split frame: '$sp'"
-      (( sp >= 1 && sp < total )) || die "split frame $sp out of range for $srcbase (1..$((total-1)), $total frames)"
-    done
+    validate_split "$total" "$srcbase"
   fi
 
   # recolor frames (collision-proof: source->sentinel, then sentinel->target).
@@ -951,15 +956,15 @@ build_variant() {
       up="$rdir/up_${SCALE}x.png"
       magick "$one" -scale "${w}x${h}!" "$up"
     fi
-    case ",$FORMATS," in *,apng,*|*,png,*)
+    if format_enabled apng; then
       cp "$one" "$vdir/${stem}_1x.png"
       echo "   + ${stem}_1x.png  (native ${dim})"
       if [[ -n "$up" ]]; then
         cp "$up" "$vdir/${stem}_${SCALE}x.png"
         echo "   + ${stem}_${SCALE}x.png  (${w}x${h})"
-      fi ;;
-    esac
-    case ",$FORMATS," in *,webp,*)
+      fi
+    fi
+    if format_enabled webp; then
       if (( HAVE_WEBP_STILL )); then
         webp_still "$one" "$vdir/${stem}_1x.webp"
         echo "   + ${stem}_1x.webp  (native ${dim})"
@@ -971,11 +976,11 @@ build_variant() {
             echo "   ! ${w}x${h} exceeds WebP's ${WEBP_MAX}px limit — ${SCALE}x webp skipped"
           fi
         fi
-      fi ;;
-    esac
-    case ",$FORMATS," in *,mov,*|*,mp4,*)
-      echo "   . mov/mp4 skipped — $srcbase is a single frame" ;;
-    esac
+      fi
+    fi
+    if format_enabled mov || format_enabled mp4; then
+      echo "   . mov/mp4 skipped — $srcbase is a single frame"
+    fi
     return 0
   fi
 
@@ -998,13 +1003,13 @@ build_variant() {
   local st cnt lbl
   while read -r st cnt lbl; do
     [[ -n "$lbl" ]] && echo "   part ${lbl#_part}: frames ${st}-$((st+cnt-1))"
-    case ",$FORMATS," in *,mov,*)
+    if format_enabled mov; then
       ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
         -frames:v "$cnt" -vf "$vf" -c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le \
         "$vdir/${stem}_${w}x${h}${lbl}_prores.mov"
-      echo "   + ${stem}_${w}x${h}${lbl}_prores.mov" ;;
-    esac
-    case ",$FORMATS," in *,mp4,*)
+      echo "   + ${stem}_${w}x${h}${lbl}_prores.mov"
+    fi
+    if format_enabled mp4; then
       # H.264 yuv420p needs even dimensions; cropping makes odd sizes likely.
       # Padding would alter the art, so skip rather than silently distort.
       if (( w % 2 || h % 2 )); then
@@ -1015,9 +1020,9 @@ build_variant() {
           -frames:v "$cnt" -vf "$vf" -c:v libx264 -pix_fmt yuv420p -crf 12 -movflags +faststart \
           "$vdir/${stem}_${w}x${h}${lbl}.mp4"
         echo "   + ${stem}_${w}x${h}${lbl}.mp4"
-      fi ;;
-    esac
-    case ",$FORMATS," in *,apng,*)
+      fi
+    fi
+    if format_enabled apng; then
       # native-resolution APNG (always)
       ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
         -frames:v "$cnt" -plays 0 -pix_fmt rgba -f apng "$vdir/${stem}_1x${lbl}.png"
@@ -1027,9 +1032,9 @@ build_variant() {
         ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
           -frames:v "$cnt" -vf "$vf" -plays 0 -pix_fmt rgba -f apng "$vdir/${stem}_${SCALE}x${lbl}.png"
         echo "   + ${stem}_${SCALE}x${lbl}.png  (${w}x${h}, web APNG)"
-      fi ;;
-    esac
-    case ",$FORMATS," in *,webp,*)
+      fi
+    fi
+    if format_enabled webp; then
       if (( HAVE_WEBP_ANIM )); then
         # native-resolution WebP (always) — mirrors the 1x APNG
         webp_anim "$rdir" "$st" "$cnt" "$vdir/${stem}_1x${lbl}.webp"
@@ -1039,8 +1044,8 @@ build_variant() {
           webp_anim "$updir" "$st" "$cnt" "$vdir/${stem}_${SCALE}x${lbl}.webp"
           echo "   + ${stem}_${SCALE}x${lbl}.webp  (${w}x${h}, web WebP)"
         fi
-      fi ;;
-    esac
+      fi
+    fi
   done < <(segments "$total")
 }
 
