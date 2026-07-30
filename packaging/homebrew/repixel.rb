@@ -10,7 +10,7 @@ class Repixel < Formula
   desc "Recolor and upscale pixel art and animations without blurring"
   homepage "https://github.com/dithernaut/repixel"
   url "https://github.com/dithernaut/repixel/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "REPLACE_WITH_THE_REAL_SHA256"
+  sha256 "575f7c73d5e52099bcb8140ed5ce6073a5a60e7a468a71e55bb9615cd57f77d6"
   license "MIT"
 
   depends_on "ffmpeg"
@@ -38,7 +38,7 @@ class Repixel < Formula
 
   test do
     # A 2px image with exactly two shades, recolored to two known colors.
-    system Formula["imagemagick"].opt_bin/"magick",
+    system formula_opt_bin("imagemagick")/"magick",
            "-size", "2x1", "gradient:black-white", "-depth", "8", testpath/"in.png"
 
     system bin/"repixel", testpath/"in.png",
