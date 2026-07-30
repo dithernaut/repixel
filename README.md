@@ -46,8 +46,8 @@ Symlinks are resolved before `themes.conf` is looked up, so this works.
 
 </details>
 
-The Homebrew formula and notes on how it's packaged live in
-[`packaging/homebrew/`](packaging/homebrew/).
+The Homebrew formula lives in its own repo,
+[dithernaut/homebrew-tap](https://github.com/dithernaut/homebrew-tap).
 
 ## Usage
 
@@ -209,8 +209,7 @@ replicates pixels rather than resampling. Theme colors come out bit-exact.
 ```
 repixel                 # the script — put it on your PATH
 themes.conf             # named color themes (edit me)
-packaging/homebrew/     # formula + publishing walkthrough
-src/                    # optional local scratch for sources (git-ignored)
+src/                    # local scratch for sources (git-ignored)
 out/                    # default output directory (git-ignored)
 ```
 
