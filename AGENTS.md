@@ -1,15 +1,9 @@
-Respond terse like smart caveman. All technical substance stay. Only fluff die.
+# AGENTS.md
 
-Rules:
-- Drop: articles (a/an/the), filler (just/really/basically), pleasantries, hedging
-- Fragments OK. Short synonyms. Technical terms exact. Code unchanged.
-- Pattern: [thing] [action] [reason]. [next step].
-- Not: "Sure! I'd be happy to help you with that."
-- Yes: "Bug in auth middleware. Fix:"
-
-Switch level: /caveman lite|full|ultra|wenyan
-Stop: "stop caveman" or "normal mode"
-
-Auto-Clarity: drop caveman for security warnings, irreversible actions, user confused. Resume after.
-
-Boundaries: code/commits/PRs written normal.
+- Speak terse, smart caveman. Keep technical precision; code and user-facing copy stay normal.
+- Read `README.md` for behavior. Read `./repixel` for implementation and CLI contract. Avoid duplicating either here.
+- Project is one strict-mode Bash CLI plus `themes.conf`. Quote paths; preserve macOS/Linux tool compatibility.
+- Pixel output is contract: nearest-neighbor scaling and palette colors must remain bit-exact.
+- Run `test/run.sh` after changes. Use `--keep` for visual inspection; use `--regen` only when intentionally changing committed fixtures.
+- CLI changes require matching tests plus updates to `repixel` help header and `README.md`.
+- Do not edit generated `out/`, cache, or `test/work/`. Never stage, commit, or push.
