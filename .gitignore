@@ -15,10 +15,12 @@ test/themes.test.conf
 
 .DS_Store
 
-# AI Folders - do not commit, derive from AGENTS.md
 .claude
+
+# AI specific files do not commit, derive from AGENTS.md
+CLAUDE.md
 .clinerules
 .opencode
 .windsurf
 .cursor
-.github
+.github/copilot-instructions.md
