@@ -16,17 +16,27 @@ Nothing is processed unless you name it — there is no magic input directory.
 
 ## Install
 
-Requirements: `ffmpeg`, `imagemagick` (`magick`), and `webp` (for `img2webp`
-and `cwebp` — most ffmpeg and ImageMagick builds ship the WebP *muxer* but no
-encoder, so WebP goes through libwebp instead).
+```bash
+brew install dithernaut/tap/repixel
+```
+
+That pulls in the three tools repixel shells out to — `ffmpeg`, `imagemagick`
+and `webp` — so there's nothing else to set up.
+
+<details>
+<summary>Running from a clone instead</summary>
+
+Install the dependencies yourself:
 
 ```bash
 brew install ffmpeg imagemagick webp
 ```
 
-If the libwebp tools are missing, repixel says so and builds everything else.
+`webp` provides `img2webp` and `cwebp`. Most ffmpeg and ImageMagick builds ship
+the WebP *muxer* but no encoder, so WebP output goes through libwebp instead. If
+those tools are missing, repixel says so and builds every other format.
 
-Put the script on your `PATH` to call it from anywhere:
+Then put the script on your `PATH`:
 
 ```bash
 ln -s "$PWD/repixel" /usr/local/bin/repixel
@@ -34,9 +44,10 @@ ln -s "$PWD/repixel" /usr/local/bin/repixel
 
 Symlinks are resolved before `themes.conf` is looked up, so this works.
 
-To distribute it properly — with the three dependencies installed for you — see
-[`packaging/homebrew/`](packaging/homebrew/), which has a ready Homebrew formula
-and a walkthrough for publishing it as a tap.
+</details>
+
+The Homebrew formula and notes on how it's packaged live in
+[`packaging/homebrew/`](packaging/homebrew/).
 
 ## Usage
 
