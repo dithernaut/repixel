@@ -1,18 +1,19 @@
 # repixel
 
-Recolor flat / pixel-art **images and animations** into themed variants and
-export editable video (**ProRes** + **MP4**) plus web assets (**APNG/PNG** +
-**WebP**), upscaled with nearest-neighbor so the pixels stay perfectly crisp —
-no blur, no quality loss.
+![repixel cover](docs/cover.png)
 
-It works on any file, anywhere. Point it at something on your Desktop and the
-results land in `./out`:
+Recolor and rescale pixel art still and animated images.
+
+Always upscaled with nearest-neighbor so the pixels stay perfectly crisp.
 
 ```bash
-repixel ~/Desktop/logo.png -p dithernaut
+repixel ~/Desktop/logo.png -p gameboy -x 8
 ```
 
-Nothing is processed unless you name it — there is no magic input directory.
+scales the input to 8x and recolors it using the `gameboy` palette.
+
+results land in `./out`:
+
 
 ## Install
 
@@ -21,7 +22,7 @@ brew install dithernaut/tap/repixel
 ```
 
 That pulls in the three tools repixel shells out to — `ffmpeg`, `imagemagick`
-and `webp` — so there's nothing else to set up.
+and `webp`.
 
 <details>
 <summary>Running from a clone instead</summary>
@@ -52,35 +53,48 @@ The Homebrew formula lives in its own repo,
 ## Usage
 
 ```bash
-repixel logo.png                          # one file, every theme
-repixel a.png b.gif ~/Desktop/sprites     # several inputs at once
-repixel ~/Desktop/sprites                 # every image directly in a folder
-repixel ~/Desktop/sprites -r              # ...and everything below it
-repixel logo.png -p dithernaut            # one theme
+repixel logo.png                          # preserve colors, rescale and export
+repixel logo.png -p gameboy               # one file, one theme/palette
+repixel a.png b.gif ~/sprites -p mono     # several inputs at once
+repixel ~/Desktop/sprites -p mono         # every image directly in a folder
+repixel ~/Desktop/sprites -r -p mono      # ...and everything below it
+repixel logo.png -A                       # every theme in themes.conf
 repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
-repixel logo.png -x 8 -o ~/Desktop/out    # scale 8x, custom output directory
-repixel clip.png -c 2,2,100,100           # crop a 98x98 box, then build
-repixel clip.png -s 157                   # split at frame 157 -> 2 parts
-repixel clip.png -s 50,120                # split into 3 parts
+repixel logo.png -p lospec:nyx8           # any palette on lospec.com
+repixel logo.png -p @nyx8.hex             # a downloaded palette file
+pbpaste | repixel logo.png -p -           # a color list copied from anywhere
+repixel logo.png -p mono -x 8 -o ~/out    # scale 8x, custom output directory
+repixel clip.png -p mono --formats all    # include the ProRes master
+repixel clip.png -p mono -c 2,2,100,100   # crop a 98x98 box, then build
+repixel clip.png -p mono -s 157           # split at frame 157 -> 2 parts
+repixel clip.png -p mono -s 50,120        # split into 3 parts
 repixel --list-themes                     # show themes
 repixel logo.png --list-colors            # show a source's shades
 ```
 
 | Option | |
 |---|---|
-| `-p, --palette PAL` | theme name **or** comma-separated hex list (default: every theme) |
-| `-o, --out DIR` | output directory (default `./out`) |
+| `-p, --palette PAL` | recolor with a theme name, hex list, `@file`, `-` (stdin) or `lospec:slug`; omit to preserve source colors |
+| `-A, --all-themes` | build every theme in the theme file |
+| `--fit MODE` | how a palette adapts to a source's shade count: `auto` (default), `nearest`, `ramp`, `exact` |
+| `--mix SPACE` | space in-between colors are blended in: `oklab` (default), `oklch`, `srgb`, `linear` |
+| `--sort MODE` | reorder a palette darkest → lightest: `auto` (default, imports only), `lum`, `none` |
+| `-o, --out DIR` | output directory (default `./out`, relative to the current directory) |
 | `-r, --recursive` | recurse into directory inputs |
 | `-c, --crop BOX` | `XSTART,YSTART,XEND,YEND`, applied before everything else |
 | `-s, --split FRAMES` | comma-separated frame(s) to cut each clip at |
-| `-x, --scale N` | integer upscale factor (default 16) |
+| `-x, --scale N` | integer upscale factor, or `auto` (default) |
+| `--max-dim N` | ceiling for `auto` scale, long edge (default 2560) |
 | `-f, --fps N` | frames per second (default 12) |
-| `--formats LIST` | any of `mov,mp4,apng,webp` (default: all four) |
+| `--formats LIST` | any of `mov,mp4,apng,webp`, or `all` (default `apng,webp,mp4`) |
+| `--max-shades N` | refuse a source with more than N shades (default 64) |
 | `--themes FILE` | use a different theme file |
 | `--reextract` | force re-extraction of source frames |
 
-> `-c` is **crop**. The palette flag is `-p`/`--palette`; `-t`, `--theme` and
-> `--colors` are all the same flag, kept so old commands keep working.
+### Output goes to `./out`, wherever you are
+
+`-o` defaults to `./out`. `repixel ~/Desktop/logo.png -p mono` writes into
+`$PWD/out`. A batch gathered from several places therefore lands in one predictable spot. 
 
 ### Inputs
 
@@ -98,35 +112,90 @@ when that happens.
 
 repixel detects this from the file — you don't pass a flag.
 
-- **Animated** input (APNG, GIF, animated WebP) → ProRes, MP4, APNG, WebP.
-- **Single-frame** input (an ordinary PNG) → PNG and WebP stills. `mov`/`mp4`
-  are skipped with a note, and `--split` is ignored.
+- **Animated** input (APNG, GIF, animated WebP) → MP4, APNG, WebP
+- **Single-frame** input (an ordinary PNG) → PNG and WebP stills.
 
 Everything else — recoloring, cropping, nearest-neighbor upscaling, theme
 matching — is identical either way.
 
 ### Palettes
 
-**`-p` takes either form** — the name of a theme in `themes.conf`
-(`-p dithernaut-alt`) or a one-off comma-separated hex list
-(`-p 171F41,2F7077,…`, with or without `#`). One flag either way, so there's no
-precedence to remember; if you pass it twice, the last one wins. Names are
-matched against `themes.conf` first, and anything that's neither a known theme
-nor valid hex is an error. A named theme lands in `<out>/<source>/<theme>/`, a
-hex list in `<out>/<source>/custom/`. Omit it entirely to build every theme.
+Use `-p` with a theme, color list, file, stdin, or Lospec palette. If you use it
+more than once, the last value wins.
+
+| Value | Source |
+|---|---|
+| `dithernaut-alt` | Theme from `themes.conf`. |
+| `171F41,2F7077,…` | Colors from darkest to lightest. Use commas, spaces, or newlines. |
+| `#000,#555,#aaa,#fff` | CSS shorthand. This example matches `mono`. |
+| `@nyx8.hex` | Palette file. Supports `.hex`, `.gpl`, `.txt`, `.json`, and plain text. |
+| `-` | Stdin. Example: `pbpaste \| repixel logo.png -p -` |
+| `lospec:nyx8` | Cached [Lospec](https://lospec.com/palette-list) palette. Full URLs also work. |
+
+Theme names take priority. Invalid palettes return an error.
+
+**Color forms**
+
+- Full hex: `RRGGBB`, `#RRGGBB`, or `0xRRGGBB`.
+- CSS shorthand: `#RGB` or `#RGBA`. Each digit is doubled; alpha is dropped.
+  Example: `-p "#000,#555,#aaa,#fff"` is `mono`.
+- Eight digits: `#RRGGBBAA` means CSS (alpha last); bare `AARRGGBB` means
+  Paint.NET `.txt` (alpha first).
+- Alpha is always dropped, never applied. Repixel recolors opaque flat art.
+- In files, shorthand requires `#`: use `#300`, not `300`.
+- In typed lists, bare shorthand is accepted: `000` is valid.
+
+Output directories: named themes use `<out>/<source>/<theme>/`; Lospec palettes
+and palette files use their own name; typed lists use `custom/`.
+
+Imported palettes are sorted darkest → lightest. Use `--sort none` to preserve original order.
+
+### Fitting palettes to shade counts
+
+`--fit` handles palettes with any number of colors:
+
+| Palette | Result |
+|---|---|
+| Same size | Uses each color as given. |
+| Larger | Selects the nearest palette colors. |
+| Smaller | Keeps every color and mixes the missing shades. |
+
+You can change this behavior:
+
+- `--fit nearest` uses palette colors only. Some shades may share a color.
+- `--fit ramp` samples the full gradient. It may skip palette colors.
+- `--fit exact` skips sources whose shade count does not match.
+
+`--max-shades` rejects sources with too many colors. Its default is 64.
+
+### Mixing new shades
+
+`--mix` controls how new shades are mixed. It only applies when the palette is
+smaller than the source shade count.
+
+| Value | Result |
+|---|---|
+| `oklab` | Default. Produces balanced perceptual steps. |
+| `oklch` | Keeps more color between similar hues. Distant hues may shift. |
+| `srgb` | Mixes hex values directly. Good for classic color ramps. |
+| `linear` | Uses linear light. Produces brighter midtones. |
+
+Example for four shades from black to white:
+
+| `--mix` | Result |
+|---|---|
+| `oklab` | `000000 363636 949494 FFFFFF` |
+| `srgb` | `000000 555555 AAAAAA FFFFFF` |
+| `linear` | `000000 9C9C9C D5D5D5 FFFFFF` |
 
 ### Cropping
 
-`-c XSTART,YSTART,XEND,YEND` crops every frame *before anything else happens*,
-so shade detection, recoloring, scaling and all output formats work on the
-cropped region. Bounds are **half-open** (XEND/YEND exclusive), so
+`-c XSTART,YSTART,XEND,YEND` crops the source frame. Bounds are **half-open** (XEND/YEND exclusive), so
 `-c 2,2,100,100` gives a **98×98** box at offset 2,2.
 
-A crop that doesn't fit is a hard error when you named a single source
-explicitly, and a skip-with-note when running a batch (so mixed-size sources
-still build). Cropping makes odd dimensions likely; H.264 needs even ones, so an
-odd result skips the `.mp4` with a note rather than distorting the art — ProRes,
-APNG and WebP are unaffected.
+A crop that doesn't fit is a hard error when you named a single source.
+
+Cropping makes odd dimensions likely; H.264 needs even ones, so an odd result skips the `.mp4` with a note rather than distorting the art
 
 ### Splitting
 
@@ -148,21 +217,32 @@ Files land in `<out>/<source>/<theme>/`, e.g.
 | `..._1x.webp` | native resolution WebP |
 | `..._<S>x.webp` | WebP at the `--scale` factor |
 
-A theme whose color count doesn't match a source's number of shades is
-**skipped with a note** — the rest of the batch still runs.
+### Formats
 
-**APNG/PNG vs WebP** — both are lossless and pixel-identical; WebP is just a lot
-smaller (roughly 2× at 1x, 5×+ at 16x for animations, since it coalesces
-repeated frames into longer durations instead of restoring them). Serve the
-**1x** file and let CSS scale it for a pixel-perfect result at any size:
+Default formats are `apng,webp,mp4`.
+
+- `--formats mov` creates ProRes for video editing.
+- `--formats all` creates every format.
+- `png` is accepted as an alias for `apng`.
+- Invalid format names return an error.
+
+ProRes takes the most time and disk space. It is not created by default.
+
+### Scale
+
+`-x` defaults to `auto`. It uses up to 16x without exceeding `--max-dim`. The
+default maximum dimension is 2560 pixels.
+
+Use `-x N` to set an exact scale.
+
+PNG, APNG, and WebP outputs are lossless. WebP files are usually smaller. For
+web use, serve the 1x file and scale it with CSS:
 
 ```css
 img { image-rendering: pixelated; width: 100%; }
 ```
 
-The `<S>x` files are there for contexts that won't do nearest-neighbor scaling
-for you. WebP animation is supported in every current browser; if you need to
-support something ancient, `<picture>` with the APNG as fallback covers it.
+Use the `<S>x` files when the target cannot apply nearest-neighbor scaling.
 
 ## Themes
 
@@ -172,13 +252,25 @@ Themes live in [`themes.conf`](themes.conf), one per line, colors listed
 ```
 dithernaut = 171F41, 2F7077, FB6C76, FEEDE3
 mono       = 000000, 555555, AAAAAA, FFFFFF
+grayscale  = 000000, FFFFFF
 ```
 
-Add a theme by copying a line and changing the name + colors. The number of
-colors must match the number of shades in the source — run
-`repixel <file> --list-colors` to see them.
+Separators are free-form — commas, spaces, or both — and `#` is optional, so a
+list copied from somewhere else can be pasted in as-is.
+
+Add a theme by copying a line and changing the name + colors. The count does
+**not** have to match the source's shade count — see
+[Fitting](#fitting-palettes-and-shade-counts-dont-have-to-match). 
+
+Run`repixel <file> --list-colors` to see a source's shades.
 
 Without `--themes FILE`, the first of these that exists wins:
+
+## Provide `your own themes.conf` file
+
+With every prompt you can also pass `--themes FILE` to specify a custom themes file. However, you can also permanently set your own themes file by creating `~/.config/repixel/themes.conf`.
+
+The theme file is searched for in the following order:
 
 1. `~/.config/repixel/themes.conf` — your own themes
 2. `themes.conf` beside the script — a git checkout run in place
@@ -186,7 +278,7 @@ Without `--themes FILE`, the first of these that exists wins:
 
 `--list-themes` prints which file it's using. If you install repixel through a
 package manager, keep your themes in **(1)**: the installed copy is replaced on
-every upgrade. Use `--themes FILE` for a per-project palette file.
+every upgrade.
 
 ## How it works
 
@@ -209,10 +301,26 @@ replicates pixels rather than resampling. Theme colors come out bit-exact.
 ```
 repixel                 # the script — put it on your PATH
 themes.conf             # named color themes (edit me)
-src/                    # local scratch for sources (git-ignored)
-out/                    # default output directory (git-ignored)
+test/run.sh             # the test suite
 ```
 
-`src/` and `out/` are only a convenience for working inside this repo; repixel
-has no attachment to either. The frame cache lives in `~/.cache/repixel` and is
+The frame cache lives in `~/.cache/repixel` and is
 safe to delete at any time.
+
+## Development
+
+```bash
+test/run.sh             # generate fixtures, run every check, clean up
+test/run.sh --keep      # leave the built output in test/work/ to look at
+```
+
+The suite generates its own fixtures rather than committing binaries: flat
+images with an exactly known number of shades (2, 4, 6), an oversized source,
+a 256-step gradient, and a small animation. That's the point — nearly every
+assertion is about repixel reproducing **specific hex values bit-exactly**, so
+the inputs have to be exact too. It covers palette fitting in every shape,
+optional `-p`, format and scale selection, the `--max-shades` guard,
+cropping, splitting, and the argument validation.
+
+`--keep` is the quickest way to eyeball a change: it leaves real recolored
+output in `test/work/` without touching `src/` or `out/`.
