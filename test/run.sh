@@ -202,14 +202,18 @@ check "--mix is inert when the palette is larger" \
 run "$FIX/still4.png" -p mono -o "$WORK/x" --mix hsv >/dev/null 2>&1
 check "unknown --mix is rejected" "1" "$?"
 
-# --- palette is required --------------------------------------------
-section "palette required"
+# --- palette is optional --------------------------------------------
+section "palette optional"
 
-run "$FIX/still4.png" -o "$WORK/x" >/dev/null 2>&1
-check "no -p exits non-zero" "1" "$?"
-OUT="$(run "$FIX/still4.png" -o "$WORK/x" 2>&1)"
-check "no -p lists the available themes" \
-  "yes" "$([[ "$OUT" == *"no palette given"* && "$OUT" == *"mono"* ]] && echo yes || echo no)"
+O="$WORK/o0"; run "$FIX/still4.png" -o "$O" --formats apng >/dev/null
+check "no -p preserves source colors" \
+  "000000,555555,AAAAAA,FFFFFF" "$(colors_of "$O/still4/original/still4_original_1x.png")"
+check "no -p still builds scaled output" "512x128" \
+  "$(dims_of "$O/still4/original/still4_original_16x.png")"
+
+O="$WORK/o0many"; run "$FIX/many.png" -o "$O" -x 1 --formats apng >/dev/null
+check "no -p bypasses recolor shade limit" "yes" \
+  "$(has "$O/many/original/many_original_1x.png")"
 
 O="$WORK/o8"; run "$FIX/still4.png" -A -o "$O" --formats apng >/dev/null
 check "-A builds every theme" "yes" \

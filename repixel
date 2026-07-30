@@ -1,46 +1,20 @@
 #!/usr/bin/env bash
 #
-# repixel — recolor flat / pixel-art images and animations into themed
-# variants and export editable video (ProRes + MP4) plus web assets
-# (APNG/PNG + WebP), upscaled with nearest-neighbor so pixels stay crisp.
+# recolor: Recolor and rescale pixel art still and animated images.
+# Always upscaled with nearest-neighbor so the pixels stay perfectly crisp.
 #
-# Works on ANY file, anywhere — pass paths. Nothing is processed unless you
-# name it. Inputs may be files or directories (a directory processes the
-# images directly inside it; add -r to walk it recursively).
+# Animated inputs (APNG / GIF / animated WebP) produce video (mp4/mov) + animated WebP/GIF.
+# Single-frame inputs produce stills (WebP and PNG)
 #
-# Animated inputs (APNG / GIF / animated WebP) produce video + animation.
-# Single-frame inputs produce stills — the mov/mp4 formats are skipped.
+# Without -p or -A, source colors stay unchanged. With a palette, colors map
+# darkest to lightest; --fit adapts mismatched shade counts and --mix controls
+# any colors created between palette entries.
 #
-# Colors in a theme are given DARKEST -> LIGHTEST and map onto each
-# source's shades (also sorted darkest -> lightest). The two counts do
-# NOT have to match — see Fitting.
-#
-# Fitting (--fit, default auto). A palette rarely has exactly as many
-# colors as a source has shades, so repixel adapts it:
-#   equal counts     used verbatim, position for position (bit-exact)
-#   palette LARGER   each shade snaps to its nearest palette entry, so
-#                    every output color is a real palette color
-#   palette SMALLER  every palette color still appears; the missing steps
-#                    are blended (see --mix) and inserted into whichever
-#                    gaps are perceptually widest
-# --fit exact restores the old behavior (skip unless the counts match).
-# Only the SMALLER case blends at all — the other two reuse palette colors,
-# so --mix has no effect on them.
-#
-# Splitting: -s / --split FRAME[,FRAME...] cuts each clip at those exact
-# frames. e.g. -s 157 -> part1 = frames 1..157, part2 = 158..end.
-#
-# Cropping: -c / --crop XSTART,YSTART,XEND,YEND crops every frame before
-# anything else happens, so recoloring, scaling and encoding all work on
-# the cropped region. Bounds are half-open — -c 2,2,100,100 yields 98x98.
-#
-# Output layout:  <outdir>/<source>/<theme>/<source>_<theme>_<WxH>[_partN].<ext>
-# <outdir> defaults to ./out relative to the CURRENT directory, not to the
-# source's directory (-o to change it). The resolved path is printed on
-# every run, so a batch pulled from several places lands in one predictable
-# spot and nothing is ever written next to somebody's originals.
+# Results land in ./out by default. Cropping happens before recoloring and
+# scaling; --split cuts animations at exact frame numbers.
 #
 # Usage:
+#   repixel logo.png                         # preserve colors, rescale/export
 #   repixel logo.png -p dithernaut            # one file, one theme
 #   repixel a.png b.gif ~/sprites -p mono     # several inputs at once
 #   repixel ~/Desktop/sprites -r -p mono      # a directory tree
@@ -58,71 +32,25 @@
 #   repixel logo.png --list-colors            # shades of the given sources
 #
 # Options:
-#   -p, --palette PAL    Where the colors come from. Required unless -A.
-#                          NAME          a theme in themes.conf
-#                          HEX,HEX,...   colors darkest->lightest. Commas,
-#                                        spaces or newlines; '#' optional;
-#                                        CSS shorthand ok (#0AF = 00AAFF)
-#                          @FILE         a palette file: .hex, .gpl (GIMP),
-#                                        .txt (Paint.NET), .json, or any
-#                                        text with hex colors in it
-#                          -             the same, read from stdin, so a
-#                                        copied palette can just be pasted
-#                          lospec:SLUG   fetch from lospec.com and cache it;
-#                                        a full palette-list URL also works
-#                        A name is matched first, so a theme always wins.
-#   -A, --all-themes     Build every theme in the theme file. Mutually
-#                        exclusive with -p.
-#       --fit MODE       How a palette adapts to a source's shade count:
-#                        auto (default), nearest, ramp, or exact. See
-#                        Fitting above; nearest/ramp force one branch of
-#                        auto, exact skips whenever the counts differ.
-#       --mix SPACE      Space the in-between colors are blended in, when a
-#                        palette is smaller than the source's shade count:
-#                          oklab  (default) perceptually even, straight line
-#                          oklch  like oklab but keeps chroma up across a
-#                                 hue change instead of dipping through a
-#                                 desaturated middle
-#                          srgb   naive lerp of the hex values. Reproduces
-#                                 classic ramps exactly: 000000->FFFFFF over
-#                                 4 shades gives 000000 555555 AAAAAA FFFFFF
-#                          linear physically correct light mixing; midtones
-#                                 come out brighter than they look even
-#                        Where the extra steps GO is always decided in Oklab,
-#                        so --mix changes their values, never their placement.
-#       --sort MODE      Whether to reorder a palette darkest->lightest:
-#                          auto (default) sort what came from a file, stdin
-#                                 or lospec — those arrive in artist order,
-#                                 which this tool cannot use — and trust the
-#                                 theme file and inline lists as written
-#                          lum    sort everything, including themes
-#                          none   trust every palette exactly as given
-#   -o, --out DIR        Output directory (default: ./out, relative to $PWD)
+#   -p, --palette PAL    Recolor using theme NAME, HEX list, @FILE, stdin (-),
+#                        or lospec:SLUG. Omit to preserve source colors.
+#   -A, --all-themes     Build every theme; mutually exclusive with -p
+#       --fit MODE       Palette fitting: auto (default), nearest, ramp, exact
+#       --mix SPACE      Blend space: oklab (default), oklch, srgb, linear
+#       --sort MODE      Palette order: auto (default), lum, none
+#   -o, --out DIR        Output directory (default: ./out)
 #   -r, --recursive      Recurse into directory inputs
-#   -c, --crop BOX       Crop XSTART,YSTART,XEND,YEND before everything else
+#   -c, --crop BOX       Crop the source to XSTART,YSTART,XEND,YEND
 #   -s, --split FRAMES   Comma-separated frame(s) to split each clip at
-#   -x, --scale N        Integer upscale factor, or 'auto' (the default):
-#                        16x unless that would push the long edge past
-#                        --max-dim, in which case it steps down.
+#   -x, --scale N        Upscale factor or auto (default; up to 16x)
 #       --max-dim N      Ceiling for 'auto' scale, long edge (default 2560)
 #   -f, --fps N          Frames per second (default 12)
-#       --formats LIST   Comma list of mov,mp4,apng,webp, or 'all'.
-#                        Default apng,webp,mp4 — ProRes is opt-in because
-#                        it is ~95% of the bytes and most of the encode
-#                        time. Use --formats all (or add mov) to get it.
-#       --max-shades N   Refuse a source with more than N distinct shades
-#                        (default 64). repixel is for flat / pixel art;
-#                        a photograph has thousands and would recolor for
-#                        hours. Raise it if you really mean it.
-#       --themes FILE    Theme file to read. Without it, the first of these
-#                        that exists wins:
-#                          ~/.config/repixel/themes.conf   (your own)
-#                          themes.conf beside this script  (git checkout)
-#                          ../share/repixel/themes.conf    (installed copy)
-#                        --list-themes prints which one is in use.
+#       --formats LIST   mov,mp4,apng,webp, or all (default apng,webp,mp4)
+#       --max-shades N   Recolor limit (default 64); ignored without a palette
+#       --themes FILE    Use a different theme file
 #       --reextract      Force re-extraction of source frames
 #       --list-themes    List themes and exit
-#       --list-colors    Print each source's shades (darkest->lightest) and exit
+#       --list-colors    List source shades and exit
 #   -h, --help           Show this help
 #
 set -euo pipefail
@@ -915,37 +843,41 @@ fi
 build_variant() {
   local srcbase="$1" name="$2" targets_csv="$3" fdir="$4"; shift 4
   local -a shades=("$@")            # source shades #RRGGBB darkest->lightest
+  local preserve=0
+  [[ "$targets_csv" == __SOURCE__ ]] && preserve=1
 
-  # normalize the palette, then fit it to this source's shade count
-  local -a pal=() raw
-  IFS=',' read -ra raw <<< "$targets_csv"
-  local t; for t in "${raw[@]}"; do pal+=("$(norm_hex "$t")"); done
+  local -a pal=() raw targets=()
+  local np=0 ns=${#shades[@]} fitnote="" fmode="$FIT"
+  if (( ! preserve )); then
+    # normalize the palette, then fit it to this source's shade count
+    IFS=',' read -ra raw <<< "$targets_csv"
+    local t; for t in "${raw[@]}"; do pal+=("$(norm_hex "$t")"); done
 
-  local np=${#pal[@]} ns=${#shades[@]} fitnote="" fmode="$FIT"
-  if [[ "$fmode" == exact ]]; then
-    if (( np != ns )); then
-      echo ">> skip  $srcbase / $name — --fit exact: palette has $np colors, source has $ns shades"
-      return 0
+    np=${#pal[@]}
+    if [[ "$fmode" == exact ]]; then
+      if (( np != ns )); then
+        echo ">> skip  $srcbase / $name — --fit exact: palette has $np colors, source has $ns shades"
+        return 0
+      fi
+      fmode=auto
+    elif (( np != ns )); then
+      if (( np > ns )); then
+        fitnote="  [fit ${np}->${ns}: nearest]"
+      else
+        fitnote="  [fit ${np}->${ns}: anchored, $((ns-np)) ${MIX} blend(s)]"
+      fi
     fi
-    fmode=auto                      # equal counts: auto already means verbatim
-  elif (( np != ns )); then
-    if (( np > ns )); then
-      fitnote="  [fit ${np}->${ns}: nearest]"
-    else
-      fitnote="  [fit ${np}->${ns}: anchored, $((ns-np)) ${MIX} blend(s)]"
+
+    IFS=',' read -ra targets <<< "$(fit_palette "$(IFS=','; echo "${pal[*]}")" "$ns" "$fmode" "$MIX")"
+    (( ${#targets[@]} == ns )) \
+      || die "internal: fit produced ${#targets[@]} colors for $ns shades"
+
+    # nearest can legitimately land two shades on one color; say so rather than
+    # letting detail quietly disappear
+    if [[ "$FIT" == nearest ]] && (( np < ns )); then
+      local uniq; uniq="$(printf '%s\n' "${targets[@]}" | sort -u | wc -l | tr -d ' ')"
+      (( uniq < ns )) && echo "   ! --fit nearest merged $ns shades onto $uniq colors"
     fi
-  fi
-
-  local -a targets=()
-  IFS=',' read -ra targets <<< "$(fit_palette "$(IFS=','; echo "${pal[*]}")" "$ns" "$fmode" "$MIX")"
-  (( ${#targets[@]} == ns )) \
-    || die "internal: fit produced ${#targets[@]} colors for $ns shades"
-
-  # nearest can legitimately land two shades on one color; say so rather than
-  # letting detail quietly disappear
-  if [[ "$FIT" == nearest ]] && (( np < ns )); then
-    local uniq; uniq="$(printf '%s\n' "${targets[@]}" | sort -u | wc -l | tr -d ' ')"
-    (( uniq < ns )) && echo "   ! --fit nearest merged $ns shades onto $uniq colors"
   fi
 
   # frame count for this clip. One frame = a still: no video, no splitting.
@@ -954,7 +886,9 @@ build_variant() {
 
   local kind=" fps=${FPS}"; (( still )) && kind=" still"
   local sn=""; [[ "$SCALE_OPT" == auto ]] && sn="(auto)"
-  echo ">> $srcbase / $name  (${targets[*]})  scale=${SCALE}x${sn}${kind}${CROP:+ crop=$CROP}${SPLIT:+ split=$SPLIT}${fitnote}"
+  local palette_note="preserve colors"
+  (( ! preserve )) && palette_note="${targets[*]}"
+  echo ">> $srcbase / $name  ($palette_note)  scale=${SCALE}x${sn}${kind}${CROP:+ crop=$CROP}${SPLIT:+ split=$SPLIT}${fitnote}"
 
   if (( still )) && [[ -n "$SPLIT" ]]; then
     echo "   ! --split ignored — $srcbase is a single frame"
@@ -977,6 +911,10 @@ build_variant() {
   local i f b sentinel; local -a args_src args_dst
   for f in "$fdir"/*.png; do
     b="$(basename "$f")"
+    if (( preserve )); then
+      cp "$f" "$rdir/$b"
+      continue
+    fi
     args_src=(); args_dst=()
     for i in "${!shades[@]}"; do
       printf -v sentinel '#00FF%02X' "$((i+1))"
@@ -1123,20 +1061,7 @@ elif [[ -n "$PALETTE" ]]; then
   PAL_RESOLVED="$(resolve_palette "$PALETTE")" || exit 1
   PALETTES+=("$PAL_RESOLVED")
 else
-  # Building every theme used to be the default, which meant a bare run
-  # encoded N themes x every format before you had decided anything. Ask.
-  {
-    echo "error: no palette given."
-    echo "  -p NAME                  a theme from $THEMES"
-    echo "  -p HEX,HEX,...           one-off colors, darkest -> lightest"
-    echo "  -p @FILE                 a .hex / .gpl / .txt / .json palette file"
-    echo "  -p -                     a palette pasted on stdin"
-    echo "  -p lospec:SLUG           a palette from lospec.com"
-    echo "  -A                       every theme in the file"
-    echo
-    list_themes
-  } >&2
-  exit 1
+  PALETTES+=("original|__SOURCE__")
 fi
 [[ ${#PALETTES[@]} -gt 0 ]] || die "no palettes to build (empty $THEMES?)"
 
@@ -1169,21 +1094,25 @@ while IFS= read -r srcf; do
   SCALE="$(resolve_scale "${dim0%x*}" "${dim0#*x}")"
 
   SHADES=()
-  while IFS= read -r ln; do [[ -n "$ln" ]] && SHADES+=("$ln"); done < <(source_shades "$fdir")
-  if [[ ${#SHADES[@]} -eq 0 ]]; then
-    echo ">> skip  $srcbase — no colors detected" >&2; continue
-  fi
-  # Guard the recolor step: it emits two -opaque operations per shade, so a
-  # photograph (thousands of colors) would build an unusable command line and
-  # grind for hours. Flat art never comes near the limit.
-  if (( ${#SHADES[@]} > MAX_SHADES )); then
-    echo "error: $srcbase has ${#SHADES[@]} distinct shades (limit $MAX_SHADES)." >&2
-    echo "       repixel is for flat / pixel art. Raise with --max-shades N." >&2
-    if (( SINGLE_SOURCE )); then exit 1; fi
-    echo ">> skip  $srcbase" >&2; continue
+  if [[ -n "$PALETTE" ]] || (( ALL_THEMES )); then
+    while IFS= read -r ln; do [[ -n "$ln" ]] && SHADES+=("$ln"); done < <(source_shades "$fdir")
+    if [[ ${#SHADES[@]} -eq 0 ]]; then
+      echo ">> skip  $srcbase — no colors detected" >&2; continue
+    fi
+    # Guard recoloring: it emits two -opaque operations per shade.
+    if (( ${#SHADES[@]} > MAX_SHADES )); then
+      echo "error: $srcbase has ${#SHADES[@]} distinct shades (limit $MAX_SHADES)." >&2
+      echo "       repixel is for flat / pixel art. Raise with --max-shades N." >&2
+      if (( SINGLE_SOURCE )); then exit 1; fi
+      echo ">> skip  $srcbase" >&2; continue
+    fi
   fi
   for pal in "${PALETTES[@]}"; do
-    build_variant "$srcbase" "${pal%%|*}" "${pal#*|}" "$fdir" "${SHADES[@]}"
+    if [[ "${pal#*|}" == __SOURCE__ ]]; then
+      build_variant "$srcbase" "${pal%%|*}" "${pal#*|}" "$fdir"
+    else
+      build_variant "$srcbase" "${pal%%|*}" "${pal#*|}" "$fdir" "${SHADES[@]}"
+    fi
   done
 done < <(list_sources)
 

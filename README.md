@@ -2,13 +2,15 @@
 
 ![repixel cover](docs/cover.png)
 
-Recolor pixel art still and animated images rethemed and rescaled images and videos.
+Recolor and rescale pixel art still and animated images.
 
 Always upscaled with nearest-neighbor so the pixels stay perfectly crisp.
 
 ```bash
-repixel ~/Desktop/logo.png -p dithernaut
+repixel ~/Desktop/logo.png -p gameboy -x 8
 ```
+
+scales the input to 8x and recolors it using the `gameboy` palette.
 
 results land in `./out`:
 
@@ -51,6 +53,7 @@ The Homebrew formula lives in its own repo,
 ## Usage
 
 ```bash
+repixel logo.png                          # preserve colors, rescale and export
 repixel logo.png -p gameboy               # one file, one theme/palette
 repixel a.png b.gif ~/sprites -p mono     # several inputs at once
 repixel ~/Desktop/sprites -p mono         # every image directly in a folder
@@ -71,7 +74,7 @@ repixel logo.png --list-colors            # show a source's shades
 
 | Option | |
 |---|---|
-| `-p, --palette PAL` | theme name, hex list, `@file`, `-` (stdin) or `lospec:slug` — **required**, unless `-A` |
+| `-p, --palette PAL` | recolor with a theme name, hex list, `@file`, `-` (stdin) or `lospec:slug`; omit to preserve source colors |
 | `-A, --all-themes` | build every theme in the theme file |
 | `--fit MODE` | how a palette adapts to a source's shade count: `auto` (default), `nearest`, `ramp`, `exact` |
 | `--mix SPACE` | space in-between colors are blended in: `oklab` (default), `oklch`, `srgb`, `linear` |
@@ -316,7 +319,7 @@ images with an exactly known number of shades (2, 4, 6), an oversized source,
 a 256-step gradient, and a small animation. That's the point — nearly every
 assertion is about repixel reproducing **specific hex values bit-exactly**, so
 the inputs have to be exact too. It covers palette fitting in every shape,
-`-p` being required, format and scale selection, the `--max-shades` guard,
+optional `-p`, format and scale selection, the `--max-shades` guard,
 cropping, splitting, and the argument validation.
 
 `--keep` is the quickest way to eyeball a change: it leaves real recolored
