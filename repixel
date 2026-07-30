@@ -59,7 +59,6 @@
 #
 # Options:
 #   -p, --palette PAL    Where the colors come from. Required unless -A.
-#                        (-t / --theme / --colors are the same flag)
 #                          NAME          a theme in themes.conf
 #                          HEX,HEX,...   colors darkest->lightest. Commas,
 #                                        spaces or newlines; '#' optional;
