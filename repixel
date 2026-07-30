@@ -11,9 +11,21 @@
 # Animated inputs (APNG / GIF / animated WebP) produce video + animation.
 # Single-frame inputs produce stills — the mov/mp4 formats are skipped.
 #
-# Colors in a theme are given DARKEST -> LIGHTEST and map positionally
-# onto each source's shades (also sorted darkest -> lightest). A theme
-# whose color count doesn't match a given source is skipped with a note.
+# Colors in a theme are given DARKEST -> LIGHTEST and map onto each
+# source's shades (also sorted darkest -> lightest). The two counts do
+# NOT have to match — see Fitting.
+#
+# Fitting (--fit, default auto). A palette rarely has exactly as many
+# colors as a source has shades, so repixel adapts it:
+#   equal counts     used verbatim, position for position (bit-exact)
+#   palette LARGER   each shade snaps to its nearest palette entry, so
+#                    every output color is a real palette color
+#   palette SMALLER  every palette color still appears; the missing steps
+#                    are blended (see --mix) and inserted into whichever
+#                    gaps are perceptually widest
+# --fit exact restores the old behavior (skip unless the counts match).
+# Only the SMALLER case blends at all — the other two reuse palette colors,
+# so --mix has no effect on them.
 #
 # Splitting: -s / --split FRAME[,FRAME...] cuts each clip at those exact
 # frames. e.g. -s 157 -> part1 = frames 1..157, part2 = 158..end.
@@ -23,38 +35,77 @@
 # the cropped region. Bounds are half-open — -c 2,2,100,100 yields 98x98.
 #
 # Output layout:  <outdir>/<source>/<theme>/<source>_<theme>_<WxH>[_partN].<ext>
-# <outdir> defaults to ./out in the current directory (-o to change it).
+# <outdir> defaults to ./out relative to the CURRENT directory, not to the
+# source's directory (-o to change it). The resolved path is printed on
+# every run, so a batch pulled from several places lands in one predictable
+# spot and nothing is ever written next to somebody's originals.
 #
 # Usage:
-#   repixel logo.png                          # one file, all themes
-#   repixel a.png b.gif ~/Desktop/sprites     # several inputs at once
-#   repixel ~/Desktop/sprites -r              # a directory tree
-#   repixel logo.png -p dithernaut            # one theme
+#   repixel logo.png -p dithernaut            # one file, one theme
+#   repixel a.png b.gif ~/sprites -p mono     # several inputs at once
+#   repixel ~/Desktop/sprites -r -p mono      # a directory tree
+#   repixel logo.png -A                       # every theme in themes.conf
 #   repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
-#   repixel logo.png -x 8 -o ~/Desktop/out    # scale 8x, custom output dir
-#   repixel clip.png -c 2,2,100,100           # crop a 98x98 box, then build
-#   repixel clip.png -s 157                   # split at frame 157
-#   repixel clip.png -s 50,120                # split into 3 parts
+#   repixel logo.png -p mono -x 8 -o ~/out    # scale 8x, custom output dir
+#   repixel clip.png -p mono --formats all    # include the ProRes master
+#   repixel clip.png -p mono -c 2,2,100,100   # crop a 98x98 box, then build
+#   repixel clip.png -p mono -s 157           # split at frame 157
+#   repixel clip.png -p mono -s 50,120        # split into 3 parts
 #   repixel --list-themes
 #   repixel logo.png --list-colors            # shades of the given sources
 #
 # Options:
 #   -p, --palette PAL    A theme name from themes.conf, OR a comma-separated
-#                        hex list darkest->lightest. Default: all themes.
+#                        hex list darkest->lightest. Required unless -A.
 #                        (-t / --theme / --colors are the same flag)
-#   -o, --out DIR        Output directory (default: ./out)
+#   -A, --all-themes     Build every theme in the theme file. Mutually
+#                        exclusive with -p.
+#       --fit MODE       How a palette adapts to a source's shade count:
+#                        auto (default), nearest, ramp, or exact. See
+#                        Fitting above; nearest/ramp force one branch of
+#                        auto, exact skips whenever the counts differ.
+#       --mix SPACE      Space the in-between colors are blended in, when a
+#                        palette is smaller than the source's shade count:
+#                          oklab  (default) perceptually even, straight line
+#                          oklch  like oklab but keeps chroma up across a
+#                                 hue change instead of dipping through a
+#                                 desaturated middle
+#                          srgb   naive lerp of the hex values. Reproduces
+#                                 classic ramps exactly: 000000->FFFFFF over
+#                                 4 shades gives 000000 555555 AAAAAA FFFFFF
+#                          linear physically correct light mixing; midtones
+#                                 come out brighter than they look even
+#                        Where the extra steps GO is always decided in Oklab,
+#                        so --mix changes their values, never their placement.
+#   -o, --out DIR        Output directory (default: ./out, relative to $PWD)
 #   -r, --recursive      Recurse into directory inputs
 #   -c, --crop BOX       Crop XSTART,YSTART,XEND,YEND before everything else
 #   -s, --split FRAMES   Comma-separated frame(s) to split each clip at
-#   -x, --scale N        Integer upscale factor (default 16)
+#   -x, --scale N        Integer upscale factor, or 'auto' (the default):
+#                        16x unless that would push the long edge past
+#                        --max-dim, in which case it steps down.
+#       --max-dim N      Ceiling for 'auto' scale, long edge (default 2560)
 #   -f, --fps N          Frames per second (default 12)
-#       --formats LIST   Comma list of mov,mp4,apng,webp (default all four)
+#       --formats LIST   Comma list of mov,mp4,apng,webp, or 'all'.
+#                        Default apng,webp,mp4 — ProRes is opt-in because
+#                        it is ~95% of the bytes and most of the encode
+#                        time. Use --formats all (or add mov) to get it.
+#       --max-shades N   Refuse a source with more than N distinct shades
+#                        (default 64). repixel is for flat / pixel art;
+#                        a photograph has thousands and would recolor for
+#                        hours. Raise it if you really mean it.
 #       --themes FILE    Theme file to read. Without it, the first of these
 #                        that exists wins:
 #                          ~/.config/repixel/themes.conf   (your own)
 #                          themes.conf beside this script  (git checkout)
 #                          ../share/repixel/themes.conf    (installed copy)
 #                        --list-themes prints which one is in use.
+#       --preview-fit N  Print what the palette(s) would become on an N-shade
+#                        source, and exit. Takes no input file — it answers
+#                        "what will this theme do to my 6-shade sprite?"
+#                        before you build anything. Honors --fit and --mix.
+#                          repixel -p dithernaut --preview-fit 6
+#                          repixel -A --preview-fit 3
 #       --reextract      Force re-extraction of source frames
 #       --list-themes    List themes and exit
 #       --list-colors    Print each source's shades (darkest->lightest) and exit
@@ -93,12 +144,22 @@ CACHEROOT="${XDG_CACHE_HOME:-$HOME/.cache}/repixel"
 INPUTS=()
 OUTDIR="out"
 RECURSIVE=0
+SCALE_OPT="auto"   # 'auto' or an integer; the per-source factor lands in SCALE
 SCALE=16
+MAX_DIM=2560       # ceiling for 'auto' scale. 2560 keeps a 130px-wide source
+                   # at the historical 16x (2080) rather than stepping it down
 FPS=12
 SPLIT=""
 CROP=""
-FORMATS="mov,mp4,apng,webp"
+# ProRes is deliberately absent: on a typical clip it is ~95% of the output
+# bytes and most of the encode time, and it is only wanted when the result is
+# actually going into an editor. --formats all (or an explicit mov) adds it.
+FORMATS="apng,webp,mp4"
 PALETTE=""
+ALL_THEMES=0
+FIT="auto"
+MIX="oklab"        # space blends are computed in; see --mix
+MAX_SHADES=64
 REEXTRACT=0
 THEMES_EXPLICIT=0
 
@@ -112,14 +173,20 @@ while [[ $# -gt 0 ]]; do
     # one flag, four spellings: a palette is a theme name OR a hex list, so
     # there's nothing to arbitrate between. Last one wins if repeated.
     -t|--theme|-p|--palette|--colors) PALETTE="$2"; shift 2;;
+    -A|--all-themes) ALL_THEMES=1; shift;;
+    --fit)          FIT="$2"; shift 2;;
+    --mix)          MIX="$2"; shift 2;;
     -o|--out)       OUTDIR="$2"; shift 2;;
     -r|--recursive) RECURSIVE=1; shift;;
     -c|--crop)      CROP="$2"; shift 2;;
     -s|--split)     SPLIT="$2"; shift 2;;
-    -x|--scale)     SCALE="$2"; shift 2;;
+    -x|--scale)     SCALE_OPT="$2"; shift 2;;
+    --max-dim)      MAX_DIM="$2"; shift 2;;
+    --max-shades)   MAX_SHADES="$2"; shift 2;;
     -f|--fps)       FPS="$2"; shift 2;;
     --formats)      FORMATS="$2"; shift 2;;
     --themes)       THEMES="$2"; THEMES_EXPLICIT=1; shift 2;;
+    --preview-fit)  PREVIEW_FIT="$2"; shift 2;;
     --reextract)    REEXTRACT=1; shift;;
     --list-themes)  LIST_THEMES=1; shift;;
     --list-colors)  LIST_COLORS=1; shift;;
@@ -131,6 +198,44 @@ while [[ $# -gt 0 ]]; do
 done
 
 need ffmpeg; need magick
+
+# --- validate the numeric / enumerated options -----------------------
+# Doing this up front means a typo fails immediately instead of quietly
+# producing nothing an hour into a batch.
+case "$FIT" in
+  auto|nearest|ramp|exact) ;;
+  *) die "--fit must be auto, nearest, ramp or exact (got '$FIT')";;
+esac
+case "$MIX" in
+  oklab|oklch|srgb|linear) ;;
+  *) die "--mix must be oklab, oklch, srgb or linear (got '$MIX')";;
+esac
+[[ "$SCALE_OPT" == auto || "$SCALE_OPT" =~ ^[1-9][0-9]*$ ]] \
+  || die "--scale must be a positive integer or 'auto' (got '$SCALE_OPT')"
+[[ "$MAX_DIM"    =~ ^[1-9][0-9]*$ ]] || die "--max-dim must be a positive integer (got '$MAX_DIM')"
+[[ "$MAX_SHADES" =~ ^[1-9][0-9]*$ ]] || die "--max-shades must be a positive integer (got '$MAX_SHADES')"
+[[ "$FPS"        =~ ^[1-9][0-9]*$ ]] || die "--fps must be a positive integer (got '$FPS')"
+
+# 'all' is a convenience for the full set; 'png' is accepted as a spelling of
+# 'apng' because the animated output *is* a .png file and asking for "png"
+# and silently getting nothing is a trap.
+FORMATS="$(echo "$FORMATS" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
+[[ "$FORMATS" == all ]] && FORMATS="mov,mp4,apng,webp"
+[[ -n "$FORMATS" ]] || die "--formats is empty (want mov,mp4,apng,webp or 'all')"
+IFS=',' read -ra _fmts <<< "$FORMATS"
+_norm=()
+for _f in "${_fmts[@]}"; do
+  [[ "$_f" == png ]] && _f=apng
+  case "$_f" in
+    mov|mp4|apng|webp) ;;
+    *) die "--formats: unknown format '$_f' (want mov,mp4,apng,webp or 'all')";;
+  esac
+  # keep the list duplicate-free so ",$FORMATS," tests stay cheap and the
+  # summary line doesn't read 'webp,webp'
+  case ",${_norm[*]-}," in *"$_f"*) ;; *) _norm+=("$_f");; esac
+done
+FORMATS="$(IFS=','; echo "${_norm[*]}")"
+unset _fmts _norm _f
 
 if (( THEMES_EXPLICIT )); then
   [[ -f "$THEMES" ]] || die "theme file not found: $THEMES"
@@ -351,6 +456,183 @@ source_shades() {
       done | sort -n -k1,1 | awk '{print $2}'
 }
 
+# --- palette fitting -----------------------------------------------
+# Adapt a palette of M colors to a source's N shades and echo N comma-
+# separated uppercase hex values, darkest -> lightest.
+#
+#   auto      M == N  palette verbatim (so an exact palette stays bit-exact)
+#             M >  N  snap each shade to its nearest palette entry: the
+#                     palette is already rich enough, so never invent a color
+#             M <  N  anchor every palette color, then insert the N-M missing
+#                     steps as blends, greedily into whichever gap is
+#                     currently widest. Keeps the palette's identity intact
+#                     instead of sampling a gradient straight through it.
+#   nearest   always snap (can collapse two shades onto one color)
+#   ramp      always sample the gradient uniformly (drops interior colors)
+#
+# Blending happens in Oklab, which is perceptually uniform: a straight line
+# between two colors there reads as an even step, where the same lerp in sRGB
+# goes muddy through the middle. Positions that land exactly on a palette
+# entry are snapped, so floating-point never shifts a color by a stray 1/255.
+fit_palette() {
+  awk -v pal="$1" -v n="$2" -v mode="$3" -v mix="$4" '
+  function hexval(s,   i,c,v,d) {
+    v = 0; s = toupper(s)
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1); d = index("0123456789ABCDEF", c) - 1; v = v*16 + d
+    }
+    return v
+  }
+  function s2l(v,   c) { c = v/255.0
+    return (c <= 0.04045) ? c/12.92 : ((c+0.055)/1.055)^2.4 }
+  function l2s(c,   v) {
+    if (c < 0) c = 0; if (c > 1) c = 1
+    v = (c <= 0.0031308) ? 12.92*c : 1.055*(c^(1/2.4)) - 0.055
+    v = int(v*255 + 0.5); if (v < 0) v = 0; if (v > 255) v = 255
+    return v
+  }
+  function cbrt(x) { return (x < 0) ? -((-x)^(1/3)) : x^(1/3) }
+  # writes OL/OA/OB — awk has no struct returns and this runs once per color
+  function toklab(hex,   r,g,b,lc,mc,sc,l_,m_,s_) {
+    r = s2l(hexval(substr(hex,1,2)))
+    g = s2l(hexval(substr(hex,3,2)))
+    b = s2l(hexval(substr(hex,5,2)))
+    lc = 0.4122214708*r + 0.5363325363*g + 0.0514459929*b
+    mc = 0.2119034982*r + 0.6806995451*g + 0.1073969566*b
+    sc = 0.0883024619*r + 0.2817188376*g + 0.6299787005*b
+    l_ = cbrt(lc); m_ = cbrt(mc); s_ = cbrt(sc)
+    OL = 0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_
+    OA = 1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_
+    OB = 0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+  }
+  function fromoklab(LL,AA,BB,   l_,m_,s_,lc,mc,sc,r,g,b) {
+    l_ = LL + 0.3963377774*AA + 0.2158037573*BB
+    m_ = LL - 0.1055613458*AA - 0.0638541728*BB
+    s_ = LL - 0.0894841775*AA - 1.2914855480*BB
+    lc = l_*l_*l_; mc = m_*m_*m_; sc = s_*s_*s_
+    r =  4.0767416621*lc - 3.3077115913*mc + 0.2309699292*sc
+    g = -1.2684380046*lc + 2.6097574011*mc - 0.3413193965*sc
+    b = -0.0041960863*lc - 0.7034186147*mc + 1.7076147010*sc
+    return sprintf("%02X%02X%02X", l2s(r), l2s(g), l2s(b))
+  }
+  function clamp255(x) { x = int(x + 0.5)
+    return (x < 0) ? 0 : ((x > 255) ? 255 : x) }
+  # writes M1/M2/M3 — the color in whichever space blending happens in
+  function tomix(hex) {
+    if (mix == "srgb") {
+      M1 = hexval(substr(hex,1,2)); M2 = hexval(substr(hex,3,2))
+      M3 = hexval(substr(hex,5,2)); return
+    }
+    if (mix == "linear") {
+      M1 = s2l(hexval(substr(hex,1,2))); M2 = s2l(hexval(substr(hex,3,2)))
+      M3 = s2l(hexval(substr(hex,5,2))); return
+    }
+    toklab(hex)
+    if (mix == "oklab") { M1 = OL; M2 = OA; M3 = OB; return }
+    # oklch: polar form of oklab, so chroma survives a blend between two
+    # saturated colors instead of dipping through a desaturated middle
+    M1 = OL; M2 = sqrt(OA*OA + OB*OB); M3 = atan2(OB, OA)
+  }
+  function frommix(a, b, c) {
+    if (mix == "srgb")   return sprintf("%02X%02X%02X", clamp255(a), clamp255(b), clamp255(c))
+    if (mix == "linear") return sprintf("%02X%02X%02X", l2s(a), l2s(b), l2s(c))
+    if (mix == "oklab")  return fromoklab(a, b, c)
+    return fromoklab(a, b*cos(c), b*sin(c))
+  }
+  # blend a fraction f of the way from palette entry i to i+1
+  function mixat(i, f,   h1, h2, dh, PI) {
+    if (mix == "oklch") {
+      PI = 3.14159265358979
+      h1 = M3A[i]; h2 = M3A[i+1]
+      # an achromatic endpoint has no meaningful hue: borrow the hue of the
+      # other end, or a blend from gray would swing through an arbitrary one
+      if (M2A[i]   < 1e-6) h1 = h2
+      if (M2A[i+1] < 1e-6) h2 = h1
+      dh = h2 - h1
+      if (dh >  PI) dh -= 2*PI
+      if (dh < -PI) dh += 2*PI
+      return frommix(M1A[i] + f*(M1A[i+1]-M1A[i]),
+                     M2A[i] + f*(M2A[i+1]-M2A[i]), h1 + f*dh)
+    }
+    return frommix(M1A[i] + f*(M1A[i+1]-M1A[i]),
+                   M2A[i] + f*(M2A[i+1]-M2A[i]),
+                   M3A[i] + f*(M3A[i+1]-M3A[i]))
+  }
+  BEGIN {
+    m = split(pal, P, ",")
+    for (i = 1; i <= m; i++) {
+      h = P[i]; sub(/^#/, "", h); h = toupper(h); HEX[i] = h
+      # Oklab is kept regardless of --mix: it decides *where* the extra steps
+      # go (widest perceptual gap), so that choice stays stable while --mix
+      # only changes the values that get blended in.
+      toklab(h); PL[i] = OL; PA[i] = OA; PB[i] = OB
+      tomix(h);  M1A[i] = M1; M2A[i] = M2; M3A[i] = M3
+    }
+    if (mode == "auto")
+      mode = (m == n) ? "verbatim" : ((m > n) ? "nearest" : "anchor")
+
+    # a one-color palette has nothing to interpolate: everything becomes it
+    if (m == 1 || mode == "verbatim") {
+      out = ""
+      for (j = 1; j <= n; j++) out = out (j > 1 ? "," : "") HEX[(m == 1) ? 1 : j]
+      print out; exit
+    }
+
+    if (mode == "nearest" || mode == "ramp") {
+      out = ""
+      for (j = 0; j < n; j++) {
+        t = (n == 1) ? 0 : j/(n-1)
+        u = t*(m-1)
+        k = int(u + 0.5)
+        # snap when the position sits on an entry, so ramp mode still returns
+        # the palette bit-exact wherever it legitimately can
+        if (mode == "nearest" || (u-k < 1e-9 && k-u < 1e-9)) {
+          out = out (j ? "," : "") HEX[k+1]; continue
+        }
+        i0 = int(u); if (i0 > m-2) i0 = m-2; if (i0 < 0) i0 = 0
+        out = out (j ? "," : "") mixat(i0+1, u-i0)
+      }
+      print out; exit
+    }
+
+    # anchor: keep all m palette colors, distribute n-m blends into the gaps.
+    # Greedy on GAP/(CNT+1) = the width a gap would still have after the
+    # blends already assigned to it, so the widest remaining step always wins.
+    for (i = 1; i < m; i++) {
+      GAP[i] = sqrt((PL[i+1]-PL[i])^2 + (PA[i+1]-PA[i])^2 + (PB[i+1]-PB[i])^2)
+      CNT[i] = 0
+    }
+    for (e = 0; e < n-m; e++) {
+      best = 1; bestv = -1
+      for (i = 1; i < m; i++) {
+        v = GAP[i]/(CNT[i]+1)
+        if (v > bestv) { bestv = v; best = i }
+      }
+      CNT[best]++
+    }
+    out = HEX[1]
+    for (i = 1; i < m; i++) {
+      for (e = 1; e <= CNT[i]; e++) out = out "," mixat(i, e/(CNT[i]+1))
+      out = out "," HEX[i+1]
+    }
+    print out
+  }'
+}
+
+# Pick the upscale factor for a WxH source. `auto` keeps the historical
+# 16x unless that would push the long edge past --max-dim, then it steps down
+# — so a 108px sprite still gets 1728, while a 2000px source gets 1x instead
+# of a 32000px file that no encoder (and no WebP) will accept.
+resolve_scale() {
+  local w="$1" h="$2" long f
+  if [[ "$SCALE_OPT" != auto ]]; then echo "$SCALE_OPT"; return; fi
+  long=$(( w > h ? w : h ))
+  f=$(( MAX_DIM / long ))
+  (( f > 16 )) && f=16
+  (( f < 1 ))  && f=1
+  echo "$f"
+}
+
 # encode an animated WebP from a frame range in DIR -> OUT.
 # img2webp defaults to lossless and -loop 0 (infinite), which is exactly
 # what pixel art wants: colors stay bit-exact, animation loops forever.
@@ -410,8 +692,15 @@ if [[ -n "$CROP" ]]; then validate_crop; fi
 # --- info modes ----------------------------------------------------
 if [[ "${LIST_THEMES:-0}" == 1 ]]; then list_themes; exit 0; fi
 
-[[ ${#INPUTS[@]} -gt 0 ]] \
-  || die "no input given — pass one or more files or directories (try --help)"
+# --preview-fit answers "what would this theme do to an N-shade source?" without
+# needing a source, so it is the one build-ish mode that takes no inputs.
+if [[ -n "${PREVIEW_FIT:-}" ]]; then
+  [[ "$PREVIEW_FIT" =~ ^[1-9][0-9]*$ ]] \
+    || die "--preview-fit needs a positive shade count (got '$PREVIEW_FIT')"
+else
+  [[ ${#INPUTS[@]} -gt 0 ]] \
+    || die "no input given — pass one or more files or directories (try --help)"
+fi
 
 # whether exactly one source was named: decides whether a bad --crop is fatal
 SINGLE_SOURCE=0
@@ -423,9 +712,13 @@ if [[ "${LIST_COLORS:-0}" == 1 ]]; then
     found=1
     rc=0; fdir="$(prepare_frames "$srcf")" || rc=$?
     if (( rc == 1 )); then continue; fi
-    if (( rc != 0 )); then exit "$rc"; fi
-    echo "$(basename "$srcf")  (darkest -> lightest):"
-    source_shades "$fdir" | nl -w2 -s'. ' | sed 's/^/   /'
+    if (( rc != 0 )); then exit 1; fi   # 2 is the internal "fatal" signal, not an exit code
+    shadelist="$(source_shades "$fdir")"
+    cnt="$(printf '%s\n' "$shadelist" | grep -c . || true)"
+    echo "$(basename "$srcf")  —  $cnt shades (darkest -> lightest):"
+    printf '%s\n' "$shadelist" | nl -w2 -s'. ' | sed 's/^/   /'
+    (( cnt > MAX_SHADES )) \
+      && echo "   ! over the --max-shades limit ($MAX_SHADES) — this source will be refused"
   done < <(list_sources)
   (( found )) || die "no image files found in the given input(s)"
   exit 0
@@ -437,13 +730,36 @@ build_variant() {
   local srcbase="$1" name="$2" targets_csv="$3" fdir="$4"; shift 4
   local -a shades=("$@")            # source shades #RRGGBB darkest->lightest
 
-  # parse + validate targets against this source's shade count
-  local -a targets=() raw
+  # normalize the palette, then fit it to this source's shade count
+  local -a pal=() raw
   IFS=',' read -ra raw <<< "$targets_csv"
-  local t; for t in "${raw[@]}"; do targets+=("$(norm_hex "$t")"); done
-  if [[ ${#targets[@]} -ne ${#shades[@]} ]]; then
-    echo ">> skip  $srcbase / $name — theme has ${#targets[@]} colors, source has ${#shades[@]} shades"
-    return 0
+  local t; for t in "${raw[@]}"; do pal+=("$(norm_hex "$t")"); done
+
+  local np=${#pal[@]} ns=${#shades[@]} fitnote="" fmode="$FIT"
+  if [[ "$fmode" == exact ]]; then
+    if (( np != ns )); then
+      echo ">> skip  $srcbase / $name — --fit exact: palette has $np colors, source has $ns shades"
+      return 0
+    fi
+    fmode=auto                      # equal counts: auto already means verbatim
+  elif (( np != ns )); then
+    if (( np > ns )); then
+      fitnote="  [fit ${np}->${ns}: nearest]"
+    else
+      fitnote="  [fit ${np}->${ns}: anchored, $((ns-np)) ${MIX} blend(s)]"
+    fi
+  fi
+
+  local -a targets=()
+  IFS=',' read -ra targets <<< "$(fit_palette "$(IFS=','; echo "${pal[*]}")" "$ns" "$fmode" "$MIX")"
+  (( ${#targets[@]} == ns )) \
+    || die "internal: fit produced ${#targets[@]} colors for $ns shades"
+
+  # nearest can legitimately land two shades on one color; say so rather than
+  # letting detail quietly disappear
+  if [[ "$FIT" == nearest ]] && (( np < ns )); then
+    local uniq; uniq="$(printf '%s\n' "${targets[@]}" | sort -u | wc -l | tr -d ' ')"
+    (( uniq < ns )) && echo "   ! --fit nearest merged $ns shades onto $uniq colors"
   fi
 
   # frame count for this clip. One frame = a still: no video, no splitting.
@@ -451,7 +767,8 @@ build_variant() {
   local still=0; (( total == 1 )) && still=1
 
   local kind=" fps=${FPS}"; (( still )) && kind=" still"
-  echo ">> $srcbase / $name  (${targets[*]})  scale=${SCALE}x${kind}${CROP:+ crop=$CROP}${SPLIT:+ split=$SPLIT}"
+  local sn=""; [[ "$SCALE_OPT" == auto ]] && sn="(auto)"
+  echo ">> $srcbase / $name  (${targets[*]})  scale=${SCALE}x${sn}${kind}${CROP:+ crop=$CROP}${SPLIT:+ split=$SPLIT}${fitnote}"
 
   if (( still )) && [[ -n "$SPLIT" ]]; then
     echo "   ! --split ignored — $srcbase is a single frame"
@@ -605,20 +922,61 @@ build_variant() {
 
 # --- assemble palette list: each entry is "name|comma,targets" ----
 PALETTES=()
-if [[ -n "$PALETTE" ]]; then
+if (( ALL_THEMES )); then
+  [[ -z "$PALETTE" ]] || die "-A/--all-themes and -p/--palette are mutually exclusive"
+  while IFS= read -r line; do
+    nm="$(echo "${line%%=*}" | tr -d ' ')"; [[ -z "$nm" ]] && continue
+    PALETTES+=("$nm|$(theme_colors "$nm")")
+  done < <(grep -E '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=' "$THEMES")
+elif [[ -n "$PALETTE" ]]; then
   # resolve in the main shell: resolve_palette dies on a bad value, and a die
   # inside a command substitution would only kill the subshell
   PAL_RESOLVED="$(resolve_palette "$PALETTE")" || exit 1
   PALETTES+=("$PAL_RESOLVED")
 else
-  while IFS= read -r line; do
-    nm="$(echo "${line%%=*}" | tr -d ' ')"; [[ -z "$nm" ]] && continue
-    PALETTES+=("$nm|$(theme_colors "$nm")")
-  done < <(grep -E '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=' "$THEMES")
+  # Building every theme used to be the default, which meant a bare run
+  # encoded N themes x every format before you had decided anything. Ask.
+  {
+    echo "error: no palette given."
+    echo "  -p NAME                  a theme from $THEMES"
+    echo "  -p HEX,HEX,...           one-off colors, darkest -> lightest"
+    echo "  -A                       every theme in the file"
+    echo
+    list_themes
+  } >&2
+  exit 1
 fi
 [[ ${#PALETTES[@]} -gt 0 ]] || die "no palettes to build (empty $THEMES?)"
 
+# --- preview mode: print the fitted palette and stop ---------------
+# One line per palette: NAME<TAB>c1,c2,...  Machine-readable on purpose, so
+# the test suite and anyone scripting against it can just cut -f2.
+if [[ -n "${PREVIEW_FIT:-}" ]]; then
+  for pal in "${PALETTES[@]}"; do
+    pname="${pal%%|*}"; pcsv="${pal#*|}"
+    pn=0; IFS=',' read -ra praw <<< "$pcsv"
+    pnorm=()
+    for t in "${praw[@]}"; do pnorm+=("$(norm_hex "$t")"); pn=$((pn+1)); done
+    if [[ "$FIT" == exact && "$pn" -ne "$PREVIEW_FIT" ]]; then
+      printf '%s\t(skipped — --fit exact, %d colors vs %d shades)\n' \
+        "$pname" "$pn" "$PREVIEW_FIT"
+      continue
+    fi
+    fmode="$FIT"; [[ "$fmode" == exact ]] && fmode=auto
+    printf '%s\t%s\n' "$pname" \
+      "$(fit_palette "$(IFS=','; echo "${pnorm[*]}")" "$PREVIEW_FIT" "$fmode" "$MIX")"
+  done
+  exit 0
+fi
+
 # --- main: every source x every palette ---------------------------
+# Resolve the output directory before anything is built and say where it is:
+# it is relative to $PWD, not to the source, so a batch gathered from several
+# places lands in one predictable spot and nothing is written beside someone's
+# originals. list_sources also uses it to avoid re-ingesting its own output.
+mkdir -p "$OUTDIR"
+echo "output -> $(cd "$OUTDIR" && pwd)"
+
 FOUND=0
 SEEN_BASES=" "   # output folders are named after the source's basename, so two
                  # inputs sharing one would overwrite each other. Say so.
@@ -633,11 +991,25 @@ while IFS= read -r srcf; do
   # NB: capture the status via `|| rc=$?` — `if ! cmd` would reset $? to 0.
   rc=0; fdir="$(prepare_frames "$srcf")" || rc=$?
   if (( rc == 1 )); then continue; fi
-  if (( rc != 0 )); then exit "$rc"; fi
+  if (( rc != 0 )); then exit 1; fi   # 2 is the internal "fatal" signal, not an exit code
+
+  # per-source upscale factor: 'auto' depends on this source's dimensions
+  dim0="$(magick identify -format '%wx%h' "$(ls "$fdir"/*.png | head -1)")"
+  SCALE="$(resolve_scale "${dim0%x*}" "${dim0#*x}")"
+
   SHADES=()
   while IFS= read -r ln; do [[ -n "$ln" ]] && SHADES+=("$ln"); done < <(source_shades "$fdir")
   if [[ ${#SHADES[@]} -eq 0 ]]; then
     echo ">> skip  $srcbase — no colors detected" >&2; continue
+  fi
+  # Guard the recolor step: it emits two -opaque operations per shade, so a
+  # photograph (thousands of colors) would build an unusable command line and
+  # grind for hours. Flat art never comes near the limit.
+  if (( ${#SHADES[@]} > MAX_SHADES )); then
+    echo "error: $srcbase has ${#SHADES[@]} distinct shades (limit $MAX_SHADES)." >&2
+    echo "       repixel is for flat / pixel art. Raise with --max-shades N." >&2
+    if (( SINGLE_SOURCE )); then exit 1; fi
+    echo ">> skip  $srcbase" >&2; continue
   fi
   for pal in "${PALETTES[@]}"; do
     build_variant "$srcbase" "${pal%%|*}" "${pal#*|}" "$fdir" "${SHADES[@]}"
@@ -646,4 +1018,4 @@ done < <(list_sources)
 
 (( FOUND )) || die "no image files found in the given input(s)"
 
-echo "done -> $OUTDIR"
+echo "done -> $(cd "$OUTDIR" && pwd)"
