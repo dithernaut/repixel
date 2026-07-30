@@ -222,6 +222,143 @@ O="$WORK/o9"; run "$FIX/still4.png" -p 111111,222222,333333,444444 -o "$O" --for
 check "one-off hex list still works" \
   "111111,222222,333333,444444" "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
 
+# --- where a palette can come from ----------------------------------
+# Every source below has to end up at the same four colors, so the assertions
+# are about the parsing, not about the fitting. The palette is deliberately
+# given out of order in most of them: anything imported gets luminance-sorted,
+# because palettes in the wild are stored in the artist's order.
+section "palette sources"
+
+PAL="$WORK/pal"; mkdir -p "$PAL"
+SET4="112233,445566,778899,AABBCC"
+
+O="$WORK/p1"; run "$FIX/still4.png" -p "112233 445566 778899 AABBCC" -o "$O" --formats apng >/dev/null
+check "inline: spaces instead of commas" "$SET4" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+
+O="$WORK/p2"; run "$FIX/still4.png" -p "#112233, #445566, #778899, #aabbcc" -o "$O" --formats apng >/dev/null
+check "inline: '#' prefixes and lowercase" "$SET4" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+
+run "$FIX/still4.png" -p "112233 nope" -o "$WORK/x" >/dev/null 2>&1
+check "inline: a bad token is an error, not a shorter palette" "1" "$?"
+
+# CSS shorthand. mono is the useful case to assert against: #000,#555,#aaa,#fff
+# is how anyone would actually type that ramp out.
+MONO="000000,555555,AAAAAA,FFFFFF"
+O="$WORK/h1"; run "$FIX/still4.png" -p "#000,#555,#aaa,#fff" -o "$O" --formats apng >/dev/null
+check "inline: #RGB expands to #RRGGBB" "$MONO" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+
+O="$WORK/h2"; run "$FIX/still4.png" -p "000 555 aaa fff" -o "$O" --formats apng >/dev/null
+check "inline: 3 digits need no '#' when you typed them" "$MONO" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+
+O="$WORK/h3"; run "$FIX/still4.png" -p "#000f,#5558,#aaa4,#fff0" -o "$O" --formats apng >/dev/null
+check "inline: #RGBA drops the alpha nibble" "$MONO" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+
+# eight digits are ambiguous, and the '#' is what disambiguates: CSS puts
+# alpha last, Paint.NET's .txt puts it first
+O="$WORK/h4"; run "$FIX/still4.png" -p "#112233FF,#445566FF,#778899FF,#AABBCCFF" -o "$O" --formats apng >/dev/null
+check "inline: #RRGGBBAA drops the trailing alpha" "$SET4" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+O="$WORK/h5"; run "$FIX/still4.png" -p "FF112233,FF445566,FF778899,FFAABBCC" -o "$O" --formats apng >/dev/null
+check "inline: bare AARRGGBB drops the leading alpha" "$SET4" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+
+O="$WORK/h6"; run "$FIX/still4.png" -p "#000,555555,#aaa,FFFFFF" -o "$O" --formats apng >/dev/null
+check "inline: shorthand and full form can be mixed" "$MONO" \
+  "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
+
+run "$FIX/still4.png" -p "#00,#000" -o "$WORK/x" >/dev/null 2>&1
+check "inline: two digits is not a color" "1" "$?"
+
+printf '#000\n#555\n#aaa\n#fff\n' > "$PAL/short.hex"
+O="$WORK/h7"; run "$FIX/still4.png" -p "@$PAL/short.hex" -o "$O" --formats apng >/dev/null
+check "@file: #RGB shorthand expands" "$MONO" \
+  "$(colors_of "$O/still4/short/still4_short_1x.png")"
+
+# ...but in a FILE, shorthand needs its '#'. A bare "300" is far more likely
+# to be a number that happened to be there than a request for #330000.
+printf '000\n555\naaa\nfff\n' > "$PAL/bare3.hex"
+run "$FIX/still4.png" -p "@$PAL/bare3.hex" -o "$WORK/x" >/dev/null 2>&1
+check "@file: bare 3-digit tokens are not colors" "1" "$?"
+echo '{"height":300,"minWidth":404,"colors":["aabbcc","112233","778899","445566"]}' > "$PAL/n.json"
+O="$WORK/h8"; run "$FIX/still4.png" -p "@$PAL/n.json" -o "$O" --formats apng >/dev/null
+check "@file: numbers beside the colors stay out of the palette" "$SET4" \
+  "$(colors_of "$O/still4/n/still4_n_1x.png")"
+
+# lospec's own .hex download: one color per line, artist's order
+printf '#aabbcc\n#112233\n#778899\n#445566\n' > "$PAL/ramp.hex"
+O="$WORK/p3"; run "$FIX/still4.png" -p "@$PAL/ramp.hex" -o "$O" --formats apng >/dev/null
+check "@file: .hex, sorted darkest -> lightest" "$SET4" \
+  "$(colors_of "$O/still4/ramp/still4_ramp_1x.png")"
+
+# GIMP .gpl stores DECIMAL triplets plus a name — and plenty of English words
+# ("Facade", "Decade") are valid hex, so a generic scan would invent colors
+{ echo "GIMP Palette"; echo "Name: Facade"; echo "#"
+  echo " 17  34  51	Decade"; echo " 68  85 102	Beefed"
+  echo "119 136 153	Faded";  echo "170 187 204	Accede"; } > "$PAL/g.gpl"
+O="$WORK/p4"; run "$FIX/still4.png" -p "@$PAL/g.gpl" -o "$O" --formats apng >/dev/null
+check "@file: .gpl decimals, color names not read as hex" "$SET4" \
+  "$(colors_of "$O/still4/g/still4_g_1x.png")"
+
+# Paint.NET .txt: ';' comments and an alpha byte in front of every color
+printf ';paint.net Palette File\n;Colors: 4\nFF112233\nFF445566\nFF778899\nFFAABBCC\n' > "$PAL/p.txt"
+O="$WORK/p5"; run "$FIX/still4.png" -p "@$PAL/p.txt" -o "$O" --formats apng >/dev/null
+check "@file: .txt AARRGGBB, ';' comments skipped" "$SET4" \
+  "$(colors_of "$O/still4/p/still4_p_1x.png")"
+
+O="$WORK/p6"
+printf '#112233\n#445566\n#778899\n#AABBCC\n' | run "$FIX/still4.png" -p - -o "$O" --formats apng >/dev/null
+check "stdin: a pasted color list" "$SET4" \
+  "$(colors_of "$O/still4/pasted/still4_pasted_1x.png")"
+
+run "$FIX/still4.png" -p "@$PAL/nope.hex" -o "$WORK/x" >/dev/null 2>&1
+check "@file: a missing file is an error" "1" "$?"
+: > "$PAL/empty.hex"
+run "$FIX/still4.png" -p "@$PAL/empty.hex" -o "$WORK/x" >/dev/null 2>&1
+check "@file: no colors in it is an error" "1" "$?"
+
+# lospec, served from the cache repixel would have written itself, so the
+# suite never needs the network. The slug is fake for exactly that reason:
+# a real one would pass even if the cache lookup were broken.
+LCACHE="$WORK/cache"; mkdir -p "$LCACHE/repixel/lospec"
+echo '{"name":"Fake","author":"","colors":["aabbcc","112233","778899","445566"]}' \
+  > "$LCACHE/repixel/lospec/repixel-test-fake.json"
+O="$WORK/p7"
+XDG_CACHE_HOME="$LCACHE" run "$FIX/still4.png" -p lospec:repixel-test-fake -o "$O" --formats apng >/dev/null
+check "lospec: cached slug, sorted, own output folder" "$SET4" \
+  "$(colors_of "$O/still4/repixel-test-fake/still4_repixel-test-fake_1x.png")"
+
+O="$WORK/p8"
+XDG_CACHE_HOME="$LCACHE" run "$FIX/still4.png" \
+  -p https://lospec.com/palette-list/repixel-test-fake -o "$O" --formats apng >/dev/null
+check "lospec: a full URL resolves to the same slug" "$SET4" \
+  "$(colors_of "$O/still4/repixel-test-fake/still4_repixel-test-fake_1x.png")"
+
+# --sort: imports are reordered, what you typed is not
+O="$WORK/p9"; run "$FIX/still4.png" -p "@$PAL/ramp.hex" --sort none -o "$O" --formats apng >/dev/null
+check "--sort none keeps an import's own order" "AABBCC" \
+  "$(magick "$O/still4/ramp/still4_ramp_1x.png" -crop 1x1+0+0 -depth 8 txt: \
+     | grep -oiE '#[0-9A-F]{6}' | tr -d '#' | tr '[:lower:]' '[:upper:]')"
+O="$WORK/p10"; run "$FIX/still4.png" -p "AABBCC,112233,778899,445566" --sort lum -o "$O" --formats apng >/dev/null
+check "--sort lum reorders a typed list too" "112233" \
+  "$(magick "$O/still4/custom/still4_custom_1x.png" -crop 1x1+0+0 -depth 8 txt: \
+     | grep -oiE '#[0-9A-F]{6}' | tr -d '#' | tr '[:lower:]' '[:upper:]')"
+run "$FIX/still4.png" -p mono --sort sideways -o "$WORK/x" >/dev/null 2>&1
+check "unknown --sort is rejected" "1" "$?"
+
+# theme lines are parsed by the same reader, so they take spaces and '#' too
+cat > "$PAL/loose.conf" <<'EOF'
+loose = #112233 #445566 #778899 #aabbcc
+EOF
+O="$WORK/p11"
+"$REPIXEL" --themes "$PAL/loose.conf" "$FIX/still4.png" -p loose -o "$O" --formats apng >/dev/null 2>&1
+check "themes.conf: space-separated, '#'-prefixed line" "$SET4" \
+  "$(colors_of "$O/still4/loose/still4_loose_1x.png")"
+
 # --- formats --------------------------------------------------------
 section "formats (ProRes is opt-in)"
 

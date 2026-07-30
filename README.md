@@ -58,6 +58,9 @@ repixel ~/Desktop/sprites -p mono         # every image directly in a folder
 repixel ~/Desktop/sprites -r -p mono      # ...and everything below it
 repixel logo.png -A                       # every theme in themes.conf
 repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
+repixel logo.png -p lospec:nyx8           # any palette on lospec.com
+repixel logo.png -p @nyx8.hex             # a downloaded palette file
+pbpaste | repixel logo.png -p -           # a color list copied from anywhere
 repixel logo.png -p mono -x 8 -o ~/out    # scale 8x, custom output directory
 repixel clip.png -p mono --formats all    # include the ProRes master
 repixel clip.png -p mono -c 2,2,100,100   # crop a 98x98 box, then build
@@ -69,10 +72,11 @@ repixel logo.png --list-colors            # show a source's shades
 
 | Option | |
 |---|---|
-| `-p, --palette PAL` | theme name **or** comma-separated hex list — **required**, unless `-A` |
+| `-p, --palette PAL` | theme name, hex list, `@file`, `-` (stdin) or `lospec:slug` — **required**, unless `-A` |
 | `-A, --all-themes` | build every theme in the theme file |
 | `--fit MODE` | how a palette adapts to a source's shade count: `auto` (default), `nearest`, `ramp`, `exact` |
 | `--mix SPACE` | space in-between colors are blended in: `oklab` (default), `oklch`, `srgb`, `linear` |
+| `--sort MODE` | reorder a palette darkest → lightest: `auto` (default, imports only), `lum`, `none` |
 | `-o, --out DIR` | output directory (default `./out`, relative to the current directory) |
 | `-r, --recursive` | recurse into directory inputs |
 | `-c, --crop BOX` | `XSTART,YSTART,XEND,YEND`, applied before everything else |
@@ -123,13 +127,48 @@ matching — is identical either way.
 
 ### Palettes
 
-**`-p` takes either form** — the name of a theme in `themes.conf`
-(`-p dithernaut-alt`) or a one-off comma-separated hex list
-(`-p 171F41,2F7077,…`, with or without `#`). One flag either way, so there's no
-precedence to remember; if you pass it twice, the last one wins. Names are
-matched against `themes.conf` first, and anything that's neither a known theme
-nor valid hex is an error. A named theme lands in `<out>/<source>/<theme>/`, a
-hex list in `<out>/<source>/custom/`.
+**`-p` takes colors from wherever you have them.** One flag for every form, so
+there's no precedence to remember; if you pass it twice, the last one wins.
+
+| `-p …` | |
+|---|---|
+| `dithernaut-alt` | a theme in `themes.conf` |
+| `171F41,2F7077,…` | colors darkest → lightest. Commas, spaces or newlines; `#` optional |
+| `#000,#555,#aaa,#fff` | CSS shorthand — each digit is doubled, so this is `mono` |
+| `@nyx8.hex` | a palette file — `.hex`, `.gpl` (GIMP), `.txt` (Paint.NET), `.json`, or any text with hex colors in it |
+| `-` | the same, read from stdin: `pbpaste \| repixel logo.png -p -` |
+| `lospec:nyx8` | fetched from [lospec.com](https://lospec.com/palette-list) and cached. A full palette-list URL works too |
+
+Names are matched against `themes.conf` first, so a theme always wins. Anything
+that is neither a known theme nor a valid palette is an error — a mistyped
+color fails loudly rather than quietly shortening the palette.
+
+**Color forms.** `RRGGBB`, `#RRGGBB`, `0xRRGGBB`, and CSS shorthand `#RGB` /
+`#RGBA` (each digit doubled, alpha dropped) — so `-p "#000,#555,#aaa,#fff"` is
+`mono`. Alpha is always dropped, never applied: repixel recolors opaque flat
+art. Eight digits are the one ambiguous case, and the `#` decides: `#RRGGBBAA`
+is CSS with alpha last, bare `AARRGGBB` is Paint.NET's `.txt` with alpha first.
+In a **file**, shorthand needs its `#` — a bare `300` in some file is far more
+likely to be a number than a request for `#330000`. In a list you typed, `000`
+is fine, since nothing else could be meant. A named theme
+lands in `<out>/<source>/<theme>/`, a lospec palette or a file under its own
+name, a typed-in list under `custom/`.
+
+**Pasted palettes are re-sorted darkest → lightest.** Palettes in the wild are
+stored in the artist's working order — lospec's `nyx8` is unsorted and its
+`oil-6` is lightest-first — while repixel maps shade *i* onto palette entry *i*.
+So imports get luminance-sorted on the way in. `themes.conf` and a list you
+typed yourself are trusted as written, since both are documented as
+darkest → lightest. `--sort lum` sorts those too; `--sort none` turns it off
+everywhere.
+
+**Big, hue-rich palettes are the one thing this doesn't do well.** repixel
+picks a color by *where it sits in the value ramp*, so the popular 30–60 color
+lospec palettes (`resurrect-64`, `apollo`, `endesga-32`) — which are chosen for
+hue variety, with many colors sharing a value — collapse to four fairly
+arbitrary hues on a 4-shade logo. They'll load and build; they just won't look
+like the palette. Value ramps are what works, which is what the bundled lospec
+themes are.
 
 **A palette is required.** Building every theme used to be the default, which
 meant a bare run encoded N themes × every format before you'd decided anything.
@@ -293,6 +332,16 @@ always present. `grayscale` is just its endpoints, so it adapts to any shade
 count with a perceptually even ramp, which `mono` can't do without also hitting
 `555555` and `AAAAAA` on the way. Neither is better; a two-color palette is
 simply a legitimate thing to write now.
+
+Separators are free-form — commas, spaces, or both — and `#` is optional, so a
+list copied from somewhere else can be pasted in as-is.
+
+A dozen popular [lospec](https://lospec.com/palette-list) palettes ship
+alongside the originals: `1bit-monitor-glow`, `2bit-demichrome`,
+`kirokaze-gameboy`, `ice-cream-gb`, `mist-gb`, `rustic-gb`, `hollow`, `oil-6`,
+`nyx8`, `slso8`, `ammo-8`, `citrink`. They're the ones that are clean value
+ramps, which is what lands well on flat art; each one's author is credited on
+its lospec page. Anything else on the site is one `-p lospec:slug` away.
 
 Add a theme by copying a line and changing the name + colors. The count does
 **not** have to match the source's shade count — see
