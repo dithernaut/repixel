@@ -1,20 +1,9 @@
 #!/usr/bin/env bash
-#
-# repixel test suite.
-#
 #   test/run.sh              run every check, write test/gallery.png, clean up
 #   test/run.sh --keep       also leave the built output in test/work/
 #   test/run.sh --regen      rebuild the committed fixtures, then run
 #
-# Fixtures in test/fixtures/ ARE committed: flat images with an exactly known
-# number of shades, plus a small animation. Every assertion here is about
-# repixel reproducing specific hex values bit-exactly, so the inputs have to be
-# fixed too — regenerating them at run time would let an ImageMagick version
-# difference change what is being tested. They total under 3 KB.
-#
-# Every run also writes test/gallery.png: a labelled contact sheet of what the
-# fitting actually produces. Assertions prove the numbers, the gallery is how
-# you check they look right.
+# Fixtures stay committed because regeneration can vary by ImageMagick version.
 
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -32,8 +21,6 @@ for a in "$@"; do
   esac
 done
 
-# ImageMagick on macOS often ships with no font configured, so labels need an
-# explicit path. Without one the gallery is still built, just unlabelled.
 FONT=""
 for f in /System/Library/Fonts/Supplemental/Arial.ttf \
          /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
@@ -55,8 +42,6 @@ no()  { printf '  %sFAIL%s %s\n' "$R" "$N" "$1"
 check() { [[ "$2" == "$3" ]] && ok "$1" || no "$1" "expected [$2] got [$3]"; }
 section() { printf '\n%s\n' "$1"; }
 
-# every distinct color in an image, uppercase hex, comma-joined, sorted.
-# Sorted by value rather than luminance: these are set comparisons.
 colors_of() {
   magick "$1" -alpha off -depth 8 -unique-colors txt: 2>/dev/null \
     | grep -oiE '#[0-9A-F]{6}' | tr '[:lower:]' '[:upper:]' | tr -d '#' \
@@ -66,7 +51,6 @@ dims_of() { magick identify -format '%wx%h' "$1[0]"; }
 has()     { [[ -e "$1" ]] && echo yes || echo no; }
 hasglob() { compgen -G "$1" >/dev/null 2>&1 && echo yes || echo no; }
 
-# yes when every color in the comma list $1 appears in the remaining args
 all_from_set() {
   local list="$1"; shift
   local c w res=yes found
@@ -78,9 +62,7 @@ all_from_set() {
   echo "$res"
 }
 
-# --- fixtures -------------------------------------------------------
-# N flat 8x8 blocks side by side = an image with exactly N shades.
-make_flat() { # outfile hex...
+make_flat() {
   local out="$1"; shift
   local -a args=(); local c
   for c in "$@"; do args+=(-size 8x8 "xc:#$c"); done
@@ -93,16 +75,11 @@ if (( REGEN )) || [[ ! -d "$FIX" ]]; then
   make_flat "$FIX/still2.png" 000000 FFFFFF
   make_flat "$FIX/still4.png" 000000 555555 AAAAAA FFFFFF
   make_flat "$FIX/still6.png" 000000 333333 666666 999999 CCCCCC FFFFFF
-  # a source big enough that auto scale has to step below 16x
   magick -size 400x400 xc:'#000000' -alpha off -colorspace sRGB -type TrueColor \
     "$FIX/big.png"
   magick "$FIX/big.png" -fill '#FFFFFF' -draw 'rectangle 0,0 199,199' "$FIX/big.png"
-  # many-shade source for the --max-shades guard (256 steps, well over the 64
-  # default — this is the shape of input that used to be silently skipped and
-  # would now try to build a ~500-argument recolor)
   magick -size 64x256 gradient:'#000000-#FFFFFF' -alpha off -colorspace sRGB \
     -type TrueColor "$FIX/many.png"
-  # 4-frame animation, 4 shades, as an animated APNG (real sources look like this)
   for i in 1 2 3 4; do make_flat "$FIX/f_$i.png" 000000 555555 AAAAAA FFFFFF; done
   ffmpeg -nostdin -v error -y -framerate 12 -i "$FIX/f_%d.png" \
     -plays 0 -pix_fmt rgba -f apng "$FIX/anim.png"
@@ -121,7 +98,6 @@ echo "  $(ls "$FIX" | wc -l | tr -d ' ') fixtures, $(du -sh "$FIX" | cut -f1) to
 
 run() { "$REPIXEL" --themes "$THEMES" "$@" 2>&1; }
 
-# --- fitting --------------------------------------------------------
 section "fitting (the palette/shade count mismatch)"
 
 O="$WORK/o1"; run "$FIX/still4.png" -p mono -o "$O" --formats apng >/dev/null
@@ -163,11 +139,8 @@ O="$WORK/o7"; run "$FIX/still2.png" -p six -o "$O" --formats apng >/dev/null
 check "6-color palette on 2 shades -> real palette entries only" \
   "000000,FFFFFF" "$(colors_of "$O/still2/six/still2_six_1x.png")"
 
-# --- blend space ----------------------------------------------------
 section "--mix (blend space)"
 
-# the headline property: a 2-color grayscale blended in sRGB reproduces the
-# classic 4-gray mono ramp exactly, so the short palette loses nothing
 O="$WORK/x1"; run "$FIX/still4.png" -p grayscale -o "$O" --mix srgb --formats apng >/dev/null
 check "grayscale + --mix srgb reproduces mono exactly" \
   "000000,555555,AAAAAA,FFFFFF" "$(colors_of "$O/still4/grayscale/still4_grayscale_1x.png")"
@@ -185,12 +158,10 @@ O="$WORK/x4"; run "$FIX/still4.png" -p grayscale -o "$O" --mix linear --formats 
 check "linear light mixing gives brighter midtones" \
   "000000,9C9C9C,D5D5D5,FFFFFF" "$(colors_of "$O/still4/grayscale/still4_grayscale_1x.png")"
 
-# grays have no chroma, so the polar form has nothing to preserve
 O="$WORK/x5"; run "$FIX/still4.png" -p grayscale -o "$O" --mix oklch --formats apng >/dev/null
 check "oklch == oklab on an achromatic palette" \
   "000000,363636,949494,FFFFFF" "$(colors_of "$O/still4/grayscale/still4_grayscale_1x.png")"
 
-# --mix only ever affects the palette-smaller case
 O="$WORK/x6"; run "$FIX/still4.png" -p warm -o "$O" --mix linear --formats apng >/dev/null
 check "--mix is inert when counts are equal" \
   "171F41,2F7077,FB6C76,FEEDE3" "$(colors_of "$O/still4/warm/still4_warm_1x.png")"
@@ -202,7 +173,6 @@ check "--mix is inert when the palette is larger" \
 run "$FIX/still4.png" -p mono -o "$WORK/x" --mix hsv >/dev/null 2>&1
 check "unknown --mix is rejected" "1" "$?"
 
-# --- palette is optional --------------------------------------------
 section "palette optional"
 
 O="$WORK/o0"; run "$FIX/still4.png" -o "$O" --formats apng >/dev/null
@@ -226,11 +196,6 @@ O="$WORK/o9"; run "$FIX/still4.png" -p 111111,222222,333333,444444 -o "$O" --for
 check "one-off hex list still works" \
   "111111,222222,333333,444444" "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
 
-# --- where a palette can come from ----------------------------------
-# Every source below has to end up at the same four colors, so the assertions
-# are about the parsing, not about the fitting. The palette is deliberately
-# given out of order in most of them: anything imported gets luminance-sorted,
-# because palettes in the wild are stored in the artist's order.
 section "palette sources"
 
 PAL="$WORK/pal"; mkdir -p "$PAL"
@@ -247,8 +212,6 @@ check "inline: '#' prefixes and lowercase" "$SET4" \
 run "$FIX/still4.png" -p "112233 nope" -o "$WORK/x" >/dev/null 2>&1
 check "inline: a bad token is an error, not a shorter palette" "1" "$?"
 
-# CSS shorthand. mono is the useful case to assert against: #000,#555,#aaa,#fff
-# is how anyone would actually type that ramp out.
 MONO="000000,555555,AAAAAA,FFFFFF"
 O="$WORK/h1"; run "$FIX/still4.png" -p "#000,#555,#aaa,#fff" -o "$O" --formats apng >/dev/null
 check "inline: #RGB expands to #RRGGBB" "$MONO" \
@@ -262,8 +225,6 @@ O="$WORK/h3"; run "$FIX/still4.png" -p "#000f,#5558,#aaa4,#fff0" -o "$O" --forma
 check "inline: #RGBA drops the alpha nibble" "$MONO" \
   "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
 
-# eight digits are ambiguous, and the '#' is what disambiguates: CSS puts
-# alpha last, Paint.NET's .txt puts it first
 O="$WORK/h4"; run "$FIX/still4.png" -p "#112233FF,#445566FF,#778899FF,#AABBCCFF" -o "$O" --formats apng >/dev/null
 check "inline: #RRGGBBAA drops the trailing alpha" "$SET4" \
   "$(colors_of "$O/still4/custom/still4_custom_1x.png")"
@@ -283,8 +244,6 @@ O="$WORK/h7"; run "$FIX/still4.png" -p "@$PAL/short.hex" -o "$O" --formats apng 
 check "@file: #RGB shorthand expands" "$MONO" \
   "$(colors_of "$O/still4/short/still4_short_1x.png")"
 
-# ...but in a FILE, shorthand needs its '#'. A bare "300" is far more likely
-# to be a number that happened to be there than a request for #330000.
 printf '000\n555\naaa\nfff\n' > "$PAL/bare3.hex"
 run "$FIX/still4.png" -p "@$PAL/bare3.hex" -o "$WORK/x" >/dev/null 2>&1
 check "@file: bare 3-digit tokens are not colors" "1" "$?"
@@ -293,14 +252,11 @@ O="$WORK/h8"; run "$FIX/still4.png" -p "@$PAL/n.json" -o "$O" --formats apng >/d
 check "@file: numbers beside the colors stay out of the palette" "$SET4" \
   "$(colors_of "$O/still4/n/still4_n_1x.png")"
 
-# lospec's own .hex download: one color per line, artist's order
 printf '#aabbcc\n#112233\n#778899\n#445566\n' > "$PAL/ramp.hex"
 O="$WORK/p3"; run "$FIX/still4.png" -p "@$PAL/ramp.hex" -o "$O" --formats apng >/dev/null
 check "@file: .hex, sorted darkest -> lightest" "$SET4" \
   "$(colors_of "$O/still4/ramp/still4_ramp_1x.png")"
 
-# GIMP .gpl stores DECIMAL triplets plus a name — and plenty of English words
-# ("Facade", "Decade") are valid hex, so a generic scan would invent colors
 { echo "GIMP Palette"; echo "Name: Facade"; echo "#"
   echo " 17  34  51	Decade"; echo " 68  85 102	Beefed"
   echo "119 136 153	Faded";  echo "170 187 204	Accede"; } > "$PAL/g.gpl"
@@ -308,7 +264,6 @@ O="$WORK/p4"; run "$FIX/still4.png" -p "@$PAL/g.gpl" -o "$O" --formats apng >/de
 check "@file: .gpl decimals, color names not read as hex" "$SET4" \
   "$(colors_of "$O/still4/g/still4_g_1x.png")"
 
-# Paint.NET .txt: ';' comments and an alpha byte in front of every color
 printf ';paint.net Palette File\n;Colors: 4\nFF112233\nFF445566\nFF778899\nFFAABBCC\n' > "$PAL/p.txt"
 O="$WORK/p5"; run "$FIX/still4.png" -p "@$PAL/p.txt" -o "$O" --formats apng >/dev/null
 check "@file: .txt AARRGGBB, ';' comments skipped" "$SET4" \
@@ -325,9 +280,6 @@ check "@file: a missing file is an error" "1" "$?"
 run "$FIX/still4.png" -p "@$PAL/empty.hex" -o "$WORK/x" >/dev/null 2>&1
 check "@file: no colors in it is an error" "1" "$?"
 
-# lospec, served from the cache repixel would have written itself, so the
-# suite never needs the network. The slug is fake for exactly that reason:
-# a real one would pass even if the cache lookup were broken.
 LCACHE="$WORK/cache"; mkdir -p "$LCACHE/repixel/lospec"
 echo '{"name":"Fake","author":"","colors":["aabbcc","112233","778899","445566"]}' \
   > "$LCACHE/repixel/lospec/repixel-test-fake.json"
@@ -342,7 +294,6 @@ XDG_CACHE_HOME="$LCACHE" run "$FIX/still4.png" \
 check "lospec: a full URL resolves to the same slug" "$SET4" \
   "$(colors_of "$O/still4/repixel-test-fake/still4_repixel-test-fake_1x.png")"
 
-# --sort: imports are reordered, what you typed is not
 O="$WORK/p9"; run "$FIX/still4.png" -p "@$PAL/ramp.hex" --sort none -o "$O" --formats apng >/dev/null
 check "--sort none keeps an import's own order" "AABBCC" \
   "$(magick "$O/still4/ramp/still4_ramp_1x.png" -crop 1x1+0+0 -depth 8 txt: \
@@ -354,7 +305,6 @@ check "--sort lum reorders a typed list too" "112233" \
 run "$FIX/still4.png" -p mono --sort sideways -o "$WORK/x" >/dev/null 2>&1
 check "unknown --sort is rejected" "1" "$?"
 
-# theme lines are parsed by the same reader, so they take spaces and '#' too
 cat > "$PAL/loose.conf" <<'EOF'
 loose = #112233 #445566 #778899 #aabbcc
 EOF
@@ -363,7 +313,6 @@ O="$WORK/p11"
 check "themes.conf: space-separated, '#'-prefixed line" "$SET4" \
   "$(colors_of "$O/still4/loose/still4_loose_1x.png")"
 
-# --- formats --------------------------------------------------------
 section "formats (ProRes is opt-in)"
 
 O="$WORK/f1"; run "$FIX/anim.png" -p mono -o "$O" >/dev/null
@@ -395,7 +344,6 @@ OUT="$(run "$FIX/still4.png" --fit 2>&1)"
 check "option without a value is rejected cleanly" \
   "yes" "$([[ "$OUT" == *"--fit needs a value"* ]] && echo yes || echo no)"
 
-# --- scale ----------------------------------------------------------
 section "scale"
 
 O="$WORK/s1"; run "$FIX/still4.png" -p mono -o "$O" --formats apng >/dev/null
@@ -416,7 +364,6 @@ check "explicit -x overrides auto" "96x24" "$(dims_of "$O/still4/mono/still4_mon
 O="$WORK/s5"; run "$FIX/still4.png" -p mono -o "$O" -x 1 --formats apng >/dev/null
 check "-x 1 writes no upscaled copy" "no" "$(has "$O/still4/mono/still4_mono_1x_1x.png")"
 
-# --- max-shades guard -----------------------------------------------
 section "max-shades guard"
 
 OUT="$(run "$FIX/many.png" -p mono -o "$WORK/m1" --formats apng 2>&1)"; RC=$?
@@ -427,7 +374,6 @@ OUT="$(run "$FIX/many.png" -p mono -o "$WORK/m2" --max-shades 300 --formats apng
 check "--max-shades raises the limit" \
   "yes" "$([[ "$OUT" != *"distinct shades"* ]] && echo yes || echo no)"
 
-# --- crop / split ---------------------------------------------------
 section "crop and split"
 
 O="$WORK/c1"; run "$FIX/still4.png" -p mono -o "$O" -c 0,0,16,8 -x 2 --formats apng >/dev/null
@@ -442,14 +388,12 @@ O="$WORK/c2"; run "$FIX/anim.png" -p mono -o "$O" -s 2 --formats apng >/dev/null
 check "split writes part1" "yes" "$(has "$O/anim/mono/anim_mono_1x_part1.png")"
 check "split writes part2" "yes" "$(has "$O/anim/mono/anim_mono_1x_part2.png")"
 
-# --- output location ------------------------------------------------
 section "output location"
 
 O="$WORK/od"; OUT="$(run "$FIX/still4.png" -p mono -o "$O" --formats apng)"
 check "the resolved absolute output path is printed" \
   "yes" "$([[ "$OUT" == *"output -> $O"* ]] && echo yes || echo no)"
 
-# --- info modes -----------------------------------------------------
 section "info modes"
 
 OUT="$(run "$FIX/still6.png" --list-colors)"
@@ -459,26 +403,17 @@ OUT="$(run --list-themes)"
 check "--list-themes works with no input" \
   "yes" "$([[ "$OUT" == *"mono"* ]] && echo yes || echo no)"
 
-# --- gallery --------------------------------------------------------
-# The assertions above prove the hex values. This proves nothing — it is here
-# so a human can look at what the fitting decided and say "no, that's wrong".
 section "gallery"
 
 GDIR="$WORK/gallery"; mkdir -p "$GDIR"
 GROWS=(); GN=0
 
-# Build a fixture for real and turn its 1x output into a labelled strip. The
-# swatches ARE repixel's output, not a re-derivation of it, so the picture
-# cannot drift from what the script actually does.
-# args: label fixture palette [extra repixel flags...]
 strip() {
   local label="$1" fixture="$2" palette="$3"; shift 3
   local o="$GDIR/o$GN" out="$GDIR/r$GN.png"; GN=$((GN+1))
   run "$FIX/$fixture" -p "$palette" -o "$o" --formats apng "$@" >/dev/null
   local src; src="$(ls "$o"/*/*/*_1x.png 2>/dev/null | head -1)"
   [[ -n "$src" ]] || { no "gallery: nothing built for $label"; return 0; }
-  # stretch to a fixed width: each shade becomes an equal band regardless of
-  # how many there are, so rows line up down the page
   magick "$src" -scale 1040x76! -bordercolor white -border 2 "$out.band.png"
   if [[ -n "$FONT" ]]; then
     magick -background white -fill '#222222' -font "$FONT" -pointsize 16 \
@@ -519,7 +454,6 @@ magick "${GROWS[@]}" -background white -gravity west -append \
   -bordercolor white -border 22 "$GALLERY"
 echo "  wrote $GALLERY  ($(magick identify -format '%wx%h' "$GALLERY"))"
 
-# --- summary --------------------------------------------------------
 printf '\n%s%d passed%s, %s%d failed%s\n' "$G" "$PASS" "$N" \
   "$( ((FAIL)) && echo "$R" || echo "$D")" "$FAIL" "$N"
 (( KEEP )) && echo "outputs kept in $WORK"

@@ -55,9 +55,7 @@
 #
 set -euo pipefail
 
-# --- locate the script's own directory (for the default theme file) ---
-# Follow symlinks: installing via `ln -s repixel /usr/local/bin/repixel` must
-# still find themes.conf next to the real file, not next to the link.
+# Resolve symlinks so an installed link still finds the adjacent theme file.
 SELF="${BASH_SOURCE[0]}"
 while [[ -L "$SELF" ]]; do
   SELF_DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
@@ -66,12 +64,6 @@ while [[ -L "$SELF" ]]; do
 done
 ROOT="$(cd -P "$(dirname "$SELF")" && pwd)"
 
-# Where to look for themes.conf, first hit wins (--themes overrides all):
-#   1. your own file, so a package-managed default is never something you
-#      have to edit — and never clobbers your themes on upgrade
-#   2. beside the script, i.e. a git checkout run in place
-#   3. ../share/repixel relative to the script — Homebrew installs the script
-#      into bin/ and support files into share/<name>/ (a formula's pkgshare)
 THEMES=""
 THEME_CANDIDATES=(
   "${XDG_CONFIG_HOME:-$HOME/.config}/repixel/themes.conf"
@@ -79,29 +71,23 @@ THEME_CANDIDATES=(
   "$(cd -P "$ROOT/.." && pwd)/share/repixel/themes.conf"
 )
 
-# Frames are scratch, not output: keep them out of the user's directories.
 CACHEROOT="${XDG_CACHE_HOME:-$HOME/.cache}/repixel"
 
-# --- defaults ---
 INPUTS=()
 OUTDIR="out"
 RECURSIVE=0
 SCALE_OPT="auto"   # 'auto' or an integer; the per-source factor lands in SCALE
 SCALE=16
-MAX_DIM=2560       # ceiling for 'auto' scale. 2560 keeps a 130px-wide source
-                   # at the historical 16x (2080) rather than stepping it down
+MAX_DIM=2560
 FPS=12
 SPLIT=""
 CROP=""
-# ProRes is deliberately absent: on a typical clip it is ~95% of the output
-# bytes and most of the encode time, and it is only wanted when the result is
-# actually going into an editor. --formats all (or an explicit mov) adds it.
 FORMATS="apng,webp,mp4"
 PALETTE=""
 ALL_THEMES=0
 FIT="auto"
-MIX="oklab"        # space blends are computed in; see --mix
-SORT="auto"        # auto = luminance-sort imported palettes only; see --sort
+MIX="oklab"
+SORT="auto"
 MAX_SHADES=64
 REEXTRACT=0
 THEMES_EXPLICIT=0
@@ -114,11 +100,8 @@ option_value() {
   OPTION_VALUE="$2"
 }
 
-# --- parse args ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    # one flag, four spellings: a palette is a theme name OR a hex list, so
-    # there's nothing to arbitrate between. Last one wins if repeated.
     -t|--theme|-p|--palette|--colors) option_value "$@"; PALETTE="$OPTION_VALUE"; shift 2;;
     -A|--all-themes) ALL_THEMES=1; shift;;
     --fit)          option_value "$@"; FIT="$OPTION_VALUE"; shift 2;;
@@ -146,9 +129,6 @@ done
 
 need ffmpeg; need magick
 
-# --- validate the numeric / enumerated options -----------------------
-# Doing this up front means a typo fails immediately instead of quietly
-# producing nothing an hour into a batch.
 validate_choice() {
   local option="$1" value="$2" choices="$3"
   case " $choices " in
@@ -169,9 +149,6 @@ validate_positive_integer --max-dim "$MAX_DIM"
 validate_positive_integer --max-shades "$MAX_SHADES"
 validate_positive_integer --fps "$FPS"
 
-# 'all' is a convenience for the full set; 'png' is accepted as a spelling of
-# 'apng' because the animated output *is* a .png file and asking for "png"
-# and silently getting nothing is a trap.
 FORMATS="$(echo "$FORMATS" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
 [[ "$FORMATS" == all ]] && FORMATS="mov,mp4,apng,webp"
 [[ -n "$FORMATS" ]] || die "--formats is empty (want mov,mp4,apng,webp or 'all')"
@@ -183,8 +160,6 @@ for _f in "${_fmts[@]}"; do
     mov|mp4|apng|webp) ;;
     *) die "--formats: unknown format '$_f' (want mov,mp4,apng,webp or 'all')";;
   esac
-  # keep the list duplicate-free so ",$FORMATS," tests stay cheap and the
-  # summary line doesn't read 'webp,webp'
   case ",${_norm[*]-}," in *"$_f"*) ;; *) _norm+=("$_f");; esac
 done
 FORMATS="$(IFS=','; echo "${_norm[*]}")"
@@ -205,9 +180,6 @@ else
   fi
 fi
 
-# animated WebP needs libwebp's img2webp, stills need cwebp (ffmpeg and
-# ImageMagick both commonly ship without the webp *encoder*). Missing them
-# only disables webp output; everything else still builds.
 HAVE_WEBP_ANIM=0
 HAVE_WEBP_STILL=0
 if format_enabled webp; then
@@ -218,24 +190,15 @@ if format_enabled webp; then
   fi
 fi
 
-# per-frame duration in ms for webp (ffmpeg takes fps directly)
 DUR=$(( 1000 / FPS ))
-WEBP_MAX=16383   # hard limit of the WebP format in either dimension
+WEBP_MAX=16383
 
-# --- helpers -------------------------------------------------------
-
-# normalize a hex string -> 6 uppercase hex digits, no '#'
 norm_hex() {
   local h="${1#\#}"
   [[ "$h" =~ ^[0-9A-Fa-f]{6}$ ]] || die "invalid hex color: '$1'"
   echo "$h" | tr '[:lower:]' '[:upper:]'
 }
 
-# read a theme's colors from the theme file -> comma list. Separators are
-# free-form (commas, spaces, or both) and '#' is optional, so a line pasted
-# from somewhere else works without being reformatted first. Strict about
-# what a color is, though: this file is hand-edited, and quietly dropping a
-# mistyped shade would just shorten the palette.
 theme_colors() {
   local name="$1" line colors
   line="$(grep -E "^[[:space:]]*${name}[[:space:]]*=" "$THEMES" 2>/dev/null | head -1)" || true
@@ -252,14 +215,8 @@ theme_exists() {
   grep -qE "^[[:space:]]*$1[[:space:]]*=" "$THEMES" 2>/dev/null
 }
 
-# sort a comma list of colors darkest -> lightest and drop duplicates.
-# Uses the same Rec.601 luma as source_shades, so a palette and a source
-# always agree on which of two colors is "darker" — the whole mapping is an
-# ordered ramp, and an out-of-order palette silently produces nonsense.
 sort_by_lum() {
   local -a cols; local hex r g b
-  # normalize first: a theme line may be lowercase or '#'-prefixed, and
-  # ${hex:0:2} arithmetic below wants six bare hex digits
   IFS=',' read -ra cols <<< "$(printf '%s\n' "$1" | hex_scan)"
   for hex in "${cols[@]}"; do
     r=$((16#${hex:0:2})); g=$((16#${hex:2:2})); b=$((16#${hex:4:2}))
@@ -267,20 +224,7 @@ sort_by_lum() {
   done | sort -n -k1,1 | awk '!seen[$2]++ {print $2}' | paste -sd, -
 }
 
-# The color grammar both scanners below share, as an awk snippet. Accepted:
-#
-#   RRGGBB #RRGGBB 0xRRGGBB    the plain form
-#   #RGB #RGBA                 CSS shorthand: each digit doubled, alpha
-#                              dropped (#0AF -> 00AAFF)
-#   #RRGGBBAA                  CSS with alpha -> the alpha byte is dropped
-#   AARRGGBB                   ...but a BARE 8-digit token is Paint.NET's
-#                              .txt, which puts alpha FIRST. Eight hex digits
-#                              are ambiguous between the two conventions and
-#                              the '#' is what tells them apart, so this is
-#                              the one place the prefix changes the meaning.
-#
-# Alpha is only ever dropped, never applied: repixel recolors opaque flat art
-# and a half-transparent palette entry has nothing to blend against here.
+# A leading # disambiguates CSS RRGGBBAA from Paint.NET AARRGGBB.
 HEX_GRAMMAR='
   function px(t,   i, o) {   # "0AF" -> "00AAFF"
     o = ""; for (i = 1; i <= 3; i++) o = o substr(t, i, 1) substr(t, i, 1)
@@ -295,14 +239,6 @@ HEX_GRAMMAR='
     return (t ~ /^[0-9A-Fa-f]{6}$/) ? toupper(t) : ""
   }'
 
-# Pull colors out of arbitrary text -> comma list, skipping anything that is
-# not a color. Separators are free-form: commas, spaces, newlines, or the
-# punctuation around a JSON string. Lenient on purpose — this reads files and
-# API responses, where stray words and numbers are structure, not typos.
-#
-# Shorthand needs its '#' here, though. A bare "300" is a color in CSS terms
-# but is far more likely to be a number that happened to sit in the file, and
-# inventing #330000 out of it would be worse than missing a palette entry.
 hex_scan() {
   awk "$HEX_GRAMMAR"'
     { gsub(/[^0-9A-Fa-fxX#]/, " "); gsub(/#/, " #")
@@ -310,19 +246,12 @@ hex_scan() {
       for (i = 1; i <= n; i++) {
         t = f[i]
         if (t == "") continue
-        # without a '#' only the full-length forms count: RRGGBB, 0xRRGGBB
-        # and AARRGGBB. That is what keeps stray 3- and 4-digit numbers out.
         if (substr(t, 1, 1) != "#" && length(t) != 6 && length(t) != 8) continue
         c = color(t); if (c != "") out = out (out == "" ? "" : ",") c
       } }
     END { if (out != "") print out }'
 }
 
-# Same, for text the user typed or wrote in the theme file: here every token
-# MUST be a color, because a silent skip would turn a mistyped shade into a
-# quietly shorter palette. Shorthand needs no '#' — nothing else can be
-# meant by three hex digits in a palette you typed out.
-# Echoes the comma list, or the offending token prefixed with '!'.
 hex_scan_strict() {
   awk "$HEX_GRAMMAR"'
     { gsub(/,/, " "); gsub(/#/, " #")
@@ -336,22 +265,15 @@ hex_scan_strict() {
     END { if (!bad && out != "") print out }'
 }
 
-# GIMP .gpl needs its own reader: its rows are DECIMAL triplets followed by a
-# color name, and plenty of English words ("facade", "decade") are valid hex,
-# so a generic scan would invent colors out of the names.
+# Hex-like color names make the generic scanner unsafe for GIMP palettes.
 gpl_colors() {
   awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+/ {
          printf "%s%02X%02X%02X", (n++ ? "," : ""), $1, $2, $3 }
        END { if (n) print "" }'
 }
 
-# The lospec JSON has hex strings in other fields too (_id, dates), so take
-# the colors array by name rather than scanning the whole document.
 lospec_colors() { tr -d ' \n' | sed -n 's/.*"colors":\[\([^]]*\)\].*/\1/p' | tr -d '"'; }
 
-# Fetch a lospec palette by slug. Cached forever under $CACHEROOT/lospec: a
-# published palette never changes, so this is a one-time network hit and
-# every later run (including offline ones) reads the cache.
 lospec_fetch() {
   local slug="$1" cache="$CACHEROOT/lospec/$slug.json"
   [[ "$slug" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid lospec slug: '$slug'"
@@ -366,23 +288,11 @@ lospec_fetch() {
   cat "$cache"
 }
 
-# strip a palette source down to a name usable as an output folder
 pal_name() {
   local n; n="$(echo "$1" | tr -c 'A-Za-z0-9._-' '-')"
   n="${n%%-}"; echo "${n:-custom}"
 }
 
-# --palette takes a theme name, an inline hex list, a file, stdin, or a lospec
-# slug/URL, so anything you can copy off a palette page can be pasted straight
-# in. Echoes "name|comma,targets". Theme names are matched first: a theme named
-# like a bare hex triplet is far less likely than someone meaning the theme
-# they just added to the config.
-#
-# Everything that did not come from the theme file is luminance-sorted unless
-# --sort says otherwise: palettes in the wild are in artist order (lospec's
-# nyx8 is unsorted, its oil-6 is lightest-first) and this tool maps shade i to
-# palette entry i. The theme file and inline lists are trusted as written,
-# since both are documented as darkest -> lightest.
 resolve_palette() {
   local v="$1" name colors raw imported=1
 
@@ -412,7 +322,6 @@ resolve_palette() {
         elif [[ "$raw" == *'"colors"'* ]]; then
           colors="$(printf '%s\n' "$raw" | lospec_colors | hex_scan)"
         else
-          # drop ';' comment lines (Paint.NET .txt) before the generic scan
           colors="$(printf '%s\n' "$raw" | grep -v '^[[:space:]]*;' | hex_scan)"
         fi
         [[ -n "$colors" ]] || die "--palette: no colors found in $what" ;;
@@ -440,35 +349,27 @@ list_themes() {
     | sed -E 's/[[:space:]]*=[[:space:]]*/  ->  /'
 }
 
-# absolute path of a file, without requiring realpath/readlink -f
+# macOS lacks realpath and readlink -f.
 abspath() {
   local d b
   d="$(cd "$(dirname "$1")" && pwd)"; b="$(basename "$1")"
   echo "$d/$b"
 }
 
-# "size mtime" of a file — the two cheap things that change when it's edited
 file_stamp() {
   stat -f '%z %m' "$1" 2>/dev/null || stat -c '%s %Y' "$1"
 }
 
-# cache key for a source: readable basename + a hash of its full path, so two
-# files with the same name in different directories don't share a cache dir
 src_key() {
   local abs; abs="$(abspath "$1")"
   printf '%s-%s\n' "$(basename "${1%.*}")" "$(printf '%s' "$abs" | cksum | cut -d' ' -f1)"
 }
 
-# Directory inputs pick up these; explicitly named files are never filtered
-# (if you point at a file, you meant it). Spelled as -iname clauses rather
-# than -iregex because BSD and GNU find disagree about regex flavors.
+# BSD and GNU find disagree on regex flavors.
 IMAGE_FIND=(
   '(' -iname '*.png' -o -iname '*.apng' -o -iname '*.gif' -o -iname '*.webp' ')'
 )
 
-# resolve the inputs -> prints one source path per line, de-duplicated.
-# Anything inside the output directory is dropped: scanning a folder you have
-# already built into (`repixel . -r`) must not feed the results back in.
 list_sources() {
   local in outabs=""
   [[ -d "$OUTDIR" ]] && outabs="$(cd "$OUTDIR" && pwd)/"
@@ -490,9 +391,6 @@ list_sources() {
   done
 }
 
-# extract a source's frames into cache, echo the frames dir. Re-extracts when
-# the file changed underneath us (size or mtime), so editing a source and
-# re-running Just Works without --reextract.
 extract_frames() {
   local src="$1" kdir fdir stamp prev=""
   kdir="$CACHEROOT/$(src_key "$src")"
@@ -508,10 +406,6 @@ extract_frames() {
   echo "$fdir"
 }
 
-# --crop geometry. Bounds are half-open (XEND exclusive), so 2,2,100,100
-# -> offset 2,2 size 98x98. The shape of the option is validated once, up
-# front in the main shell (below); only the per-source bounds check runs
-# later, inside a subshell, where it reports via exit status instead.
 CROP_X=0; CROP_Y=0; CROP_W=0; CROP_H=0; CROP_X2=0; CROP_Y2=0
 
 validate_crop() {
@@ -527,10 +421,6 @@ validate_crop() {
     || die "--crop is empty: XEND/YEND must exceed XSTART/YSTART (got '$CROP')"
 }
 
-# A crop that doesn't fit is source-specific, not a malformed option: fatal
-# when a single file was named explicitly, otherwise skipped like a shade/theme
-# mismatch so the rest of the batch still runs.
-#   0 = fits    1 = skip this source    2 = fatal
 check_crop_bounds() {
   local srcw="$1" srch="$2" srcbase="$3"
   (( CROP_X2 <= srcw && CROP_Y2 <= srch )) && return 0
@@ -542,9 +432,6 @@ check_crop_bounds() {
   return 1
 }
 
-# extract frames, then crop them if --crop was given. Cropping here (rather
-# than at encode time) means shade detection, recoloring, scaling and every
-# output format all see the cropped region. Echoes the frames dir to use.
 prepare_frames() {
   local src="$1" fdir base srcw srch cdir
   fdir="$(extract_frames "$src")"
@@ -555,15 +442,10 @@ prepare_frames() {
   srcw="${d%x*}"; srch="${d#*x}"
   check_crop_bounds "$srcw" "$srch" "$base" || return $?
 
-  # keyed by geometry so different crops don't clobber each other's cache
   cdir="$(dirname "$fdir")/crop_${CROP_W}x${CROP_H}+${CROP_X}+${CROP_Y}"
   if [[ "$REEXTRACT" == 1 || ! -d "$cdir" || -z "$(ls -A "$cdir" 2>/dev/null)" ]]; then
     rm -rf "$cdir"; mkdir -p "$cdir"
-    # One ffmpeg pass, not one magick per frame — far faster. format=rgba is
-    # essential: these sources are grayscale, and a crop written back out as a
-    # Gray-colorspace PNG makes every later color fill collapse to its gray
-    # value (i.e. near-black output). Cropping never resamples, so this stays
-    # pixel-exact.
+    # rgba prevents grayscale PNGs from collapsing later color fills.
     ffmpeg -nostdin -v error -y -start_number 1 -i "$fdir/f_%04d.png" \
       -vf "format=rgba,crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y}" \
       "$cdir/f_%04d.png"
@@ -571,8 +453,7 @@ prepare_frames() {
   echo "$cdir"
 }
 
-# detect a source's shades, sorted darkest->lightest, one #RRGGBB per line
-# (portable: luminance computed in bash, no gawk/strtonum needed)
+# Bash arithmetic avoids nonportable gawk strtonum().
 source_shades() {
   local fdir="$1" hex r g b lum
   magick "$fdir"/*.png -append -depth 8 -unique-colors txt: 2>/dev/null \
@@ -584,24 +465,6 @@ source_shades() {
       done | sort -n -k1,1 | awk '{print $2}'
 }
 
-# --- palette fitting -----------------------------------------------
-# Adapt a palette of M colors to a source's N shades and echo N comma-
-# separated uppercase hex values, darkest -> lightest.
-#
-#   auto      M == N  palette verbatim (so an exact palette stays bit-exact)
-#             M >  N  snap each shade to its nearest palette entry: the
-#                     palette is already rich enough, so never invent a color
-#             M <  N  anchor every palette color, then insert the N-M missing
-#                     steps as blends, greedily into whichever gap is
-#                     currently widest. Keeps the palette's identity intact
-#                     instead of sampling a gradient straight through it.
-#   nearest   always snap (can collapse two shades onto one color)
-#   ramp      always sample the gradient uniformly (drops interior colors)
-#
-# Blending happens in Oklab, which is perceptually uniform: a straight line
-# between two colors there reads as an even step, where the same lerp in sRGB
-# goes muddy through the middle. Positions that land exactly on a palette
-# entry are snapped, so floating-point never shifts a color by a stray 1/255.
 fit_palette() {
   awk -v pal="$1" -v n="$2" -v mode="$3" -v mix="$4" '
   function hexval(s,   i,c,v,d) {
@@ -620,7 +483,6 @@ fit_palette() {
     return v
   }
   function cbrt(x) { return (x < 0) ? -((-x)^(1/3)) : x^(1/3) }
-  # writes OL/OA/OB — awk has no struct returns and this runs once per color
   function toklab(hex,   r,g,b,lc,mc,sc,l_,m_,s_) {
     r = s2l(hexval(substr(hex,1,2)))
     g = s2l(hexval(substr(hex,3,2)))
@@ -645,7 +507,6 @@ fit_palette() {
   }
   function clamp255(x) { x = int(x + 0.5)
     return (x < 0) ? 0 : ((x > 255) ? 255 : x) }
-  # writes M1/M2/M3 — the color in whichever space blending happens in
   function tomix(hex) {
     if (mix == "srgb") {
       M1 = hexval(substr(hex,1,2)); M2 = hexval(substr(hex,3,2))
@@ -657,8 +518,6 @@ fit_palette() {
     }
     toklab(hex)
     if (mix == "oklab") { M1 = OL; M2 = OA; M3 = OB; return }
-    # oklch: polar form of oklab, so chroma survives a blend between two
-    # saturated colors instead of dipping through a desaturated middle
     M1 = OL; M2 = sqrt(OA*OA + OB*OB); M3 = atan2(OB, OA)
   }
   function frommix(a, b, c) {
@@ -667,13 +526,11 @@ fit_palette() {
     if (mix == "oklab")  return fromoklab(a, b, c)
     return fromoklab(a, b*cos(c), b*sin(c))
   }
-  # blend a fraction f of the way from palette entry i to i+1
   function mixat(i, f,   h1, h2, dh, PI) {
     if (mix == "oklch") {
       PI = 3.14159265358979
       h1 = M3A[i]; h2 = M3A[i+1]
-      # an achromatic endpoint has no meaningful hue: borrow the hue of the
-      # other end, or a blend from gray would swing through an arbitrary one
+      # Achromatic endpoints have no meaningful hue.
       if (M2A[i]   < 1e-6) h1 = h2
       if (M2A[i+1] < 1e-6) h2 = h1
       dh = h2 - h1
@@ -690,16 +547,13 @@ fit_palette() {
     m = split(pal, P, ",")
     for (i = 1; i <= m; i++) {
       h = P[i]; sub(/^#/, "", h); h = toupper(h); HEX[i] = h
-      # Oklab is kept regardless of --mix: it decides *where* the extra steps
-      # go (widest perceptual gap), so that choice stays stable while --mix
-      # only changes the values that get blended in.
+      # Gap selection stays perceptual regardless of the output mix space.
       toklab(h); PL[i] = OL; PA[i] = OA; PB[i] = OB
       tomix(h);  M1A[i] = M1; M2A[i] = M2; M3A[i] = M3
     }
     if (mode == "auto")
       mode = (m == n) ? "verbatim" : ((m > n) ? "nearest" : "anchor")
 
-    # a one-color palette has nothing to interpolate: everything becomes it
     if (m == 1 || mode == "verbatim") {
       out = ""
       for (j = 1; j <= n; j++) out = out (j > 1 ? "," : "") HEX[(m == 1) ? 1 : j]
@@ -712,8 +566,7 @@ fit_palette() {
         t = (n == 1) ? 0 : j/(n-1)
         u = t*(m-1)
         k = int(u + 0.5)
-        # snap when the position sits on an entry, so ramp mode still returns
-        # the palette bit-exact wherever it legitimately can
+        # Preserve exact palette entries against floating-point drift.
         if (mode == "nearest" || (u-k < 1e-9 && k-u < 1e-9)) {
           out = out (j ? "," : "") HEX[k+1]; continue
         }
@@ -723,9 +576,6 @@ fit_palette() {
       print out; exit
     }
 
-    # anchor: keep all m palette colors, distribute n-m blends into the gaps.
-    # Greedy on GAP/(CNT+1) = the width a gap would still have after the
-    # blends already assigned to it, so the widest remaining step always wins.
     for (i = 1; i < m; i++) {
       GAP[i] = sqrt((PL[i+1]-PL[i])^2 + (PA[i+1]-PA[i])^2 + (PB[i+1]-PB[i])^2)
       CNT[i] = 0
@@ -747,10 +597,6 @@ fit_palette() {
   }'
 }
 
-# Pick the upscale factor for a WxH source. `auto` keeps the historical
-# 16x unless that would push the long edge past --max-dim, then it steps down
-# — so a 108px sprite still gets 1728, while a 2000px source gets 1x instead
-# of a 32000px file that no encoder (and no WebP) will accept.
 resolve_scale() {
   local w="$1" h="$2" long f
   if [[ "$SCALE_OPT" != auto ]]; then echo "$SCALE_OPT"; return; fi
@@ -761,10 +607,6 @@ resolve_scale() {
   echo "$f"
 }
 
-# encode an animated WebP from a frame range in DIR -> OUT.
-# img2webp defaults to lossless and -loop 0 (infinite), which is exactly
-# what pixel art wants: colors stay bit-exact, animation loops forever.
-# args: dir start count outfile
 webp_anim() {
   local dir="$1" st="$2" cnt="$3" out="$4"
   local -a files=(); local i n
@@ -772,8 +614,6 @@ webp_anim() {
     printf -v n 'f_%04d.png' "$((st+i))"
     files+=("$dir/$n")
   done
-  # img2webp chatters to stderr even without -v; hold it back and only
-  # surface it if the encode actually fails.
   local log
   if ! log="$(img2webp -loop 0 -lossless -d "$DUR" "${files[@]}" -o "$out" 2>&1)"; then
     echo "$log" >&2
@@ -781,7 +621,6 @@ webp_anim() {
   fi
 }
 
-# encode a single lossless WebP still. args: infile outfile
 webp_still() {
   local log
   if ! log="$(cwebp -quiet -lossless -exact "$1" -o "$2" 2>&1)"; then
@@ -790,8 +629,6 @@ webp_still() {
   fi
 }
 
-# build segment list for a clip of TOTAL frames given $SPLIT.
-# echoes lines "start count label" (label empty when not splitting).
 segments() {
   local total="$1"
   if [[ -z "$SPLIT" ]]; then echo "1 $total "; return; fi
@@ -816,18 +653,13 @@ validate_split() {
   done
 }
 
-# validate --crop's shape once, here in the main shell (and after the
-# helpers are defined), so a malformed option fails loudly rather than
-# dying inside a command substitution where its exit status gets swallowed
 if [[ -n "$CROP" ]]; then validate_crop; fi
 
-# --- info modes ----------------------------------------------------
 if [[ "${LIST_THEMES:-0}" == 1 ]]; then list_themes; exit 0; fi
 
 [[ ${#INPUTS[@]} -gt 0 ]] \
   || die "no input given — pass one or more files or directories (try --help)"
 
-# whether exactly one source was named: decides whether a bad --crop is fatal
 SINGLE_SOURCE=0
 [[ ${#INPUTS[@]} -eq 1 && -f "${INPUTS[0]}" ]] && SINGLE_SOURCE=1
 
@@ -849,8 +681,6 @@ if [[ "${LIST_COLORS:-0}" == 1 ]]; then
   exit 0
 fi
 
-# --- build one variant ---------------------------------------------
-# args: srcbase  palette_name  "comma,targets"  frames_dir  shades...
 build_variant() {
   local srcbase="$1" name="$2" targets_csv="$3" fdir="$4"; shift 4
   local -a shades=("$@")            # source shades #RRGGBB darkest->lightest
@@ -860,7 +690,6 @@ build_variant() {
   local -a pal=() raw targets=()
   local np=0 ns=${#shades[@]} fitnote="" fmode="$FIT"
   if (( ! preserve )); then
-    # normalize the palette, then fit it to this source's shade count
     IFS=',' read -ra raw <<< "$targets_csv"
     local t; for t in "${raw[@]}"; do pal+=("$(norm_hex "$t")"); done
 
@@ -883,15 +712,12 @@ build_variant() {
     (( ${#targets[@]} == ns )) \
       || die "internal: fit produced ${#targets[@]} colors for $ns shades"
 
-    # nearest can legitimately land two shades on one color; say so rather than
-    # letting detail quietly disappear
     if [[ "$FIT" == nearest ]] && (( np < ns )); then
       local uniq; uniq="$(printf '%s\n' "${targets[@]}" | sort -u | wc -l | tr -d ' ')"
       (( uniq < ns )) && echo "   ! --fit nearest merged $ns shades onto $uniq colors"
     fi
   fi
 
-  # frame count for this clip. One frame = a still: no video, no splitting.
   local total; total=$(ls "$fdir"/*.png | wc -l | tr -d ' ')
   local still=0; (( total == 1 )) && still=1
 
@@ -908,9 +734,6 @@ build_variant() {
     validate_split "$total" "$srcbase"
   fi
 
-  # recolor frames (collision-proof: source->sentinel, then sentinel->target).
-  # Lives beside this source's own frame cache, so two same-named files from
-  # different directories never share a recolor dir.
   local rdir="$(dirname "$fdir")/recolored/$name"
   rm -rf "$rdir"; mkdir -p "$rdir"
   local i f b sentinel; local -a args_src args_dst
@@ -926,32 +749,23 @@ build_variant() {
       args_src+=(-fuzz 0 -fill "$sentinel" -opaque "${shades[$i]}")
       args_dst+=(-fuzz 0 -fill "#${targets[$i]}" -opaque "$sentinel")
     done
-    # -colorspace sRGB -type TrueColor is load-bearing: these sources are
-    # grayscale, and on a Gray-colorspace image every color fill collapses to
-    # its gray value (black output). Promote before recoloring, always.
+    # TrueColor prevents grayscale inputs from collapsing color fills.
     magick "$f" -alpha off -colorspace sRGB -type TrueColor \
       "${args_src[@]}" "${args_dst[@]}" "$rdir/$b"
   done
 
-  # dimensions
   local dim w h
   dim="$(magick identify -format '%wx%h' "$(ls "$fdir"/*.png | head -1)")"
   w=$(( ${dim%x*} * SCALE )); h=$(( ${dim#*x} * SCALE ))
 
   local vdir="$OUTDIR/$srcbase/$name"; mkdir -p "$vdir"
   local stem="${srcbase}_${name}"
-  # format=rgba first: swscale rounds pal8->RGB by +/-1, which would shift the
-  # exact theme colors. Converting to rgba before scaling keeps them exact.
+  # rgba prevents swscale from shifting pal8 colors by one.
   local vf="format=rgba,scale=iw*${SCALE}:ih*${SCALE}:flags=neighbor"
 
-  # --- stills: one frame in, PNG + WebP out (mov/mp4/animation don't apply)
   if (( still )); then
     local one up=""
     one="$(ls "$rdir"/*.png | head -1)"
-    # Render the upscaled frame once, into the cache, so PNG and WebP output
-    # are independent of each other (--formats webp alone still works).
-    # -scale is ImageMagick's nearest-neighbor path: on an integer factor it
-    # replicates pixels exactly, so theme colors stay bit-exact.
     if [[ "$SCALE" != "1" ]]; then
       up="$rdir/up_${SCALE}x.png"
       magick "$one" -scale "${w}x${h}!" "$up"
@@ -984,14 +798,11 @@ build_variant() {
     return 0
   fi
 
-  # img2webp can't scale, so pre-render upscaled frames once per variant.
   local updir="" webp_up=0
   if (( HAVE_WEBP_ANIM )) && [[ "$SCALE" != "1" ]]; then
     if (( w <= WEBP_MAX && h <= WEBP_MAX )); then
       webp_up=1
       updir="$rdir/up"; rm -rf "$updir"; mkdir -p "$updir"
-      # single ffmpeg pass rather than one magick per frame; same nearest-
-      # neighbor filter chain the video encoders use, so it stays bit-exact
       ffmpeg -nostdin -v error -y -start_number 1 -i "$rdir/f_%04d.png" \
         -vf "$vf" "$updir/f_%04d.png"
     else
@@ -999,7 +810,6 @@ build_variant() {
     fi
   fi
 
-  # encode each segment (one segment covering the whole clip when not splitting)
   local st cnt lbl
   while read -r st cnt lbl; do
     [[ -n "$lbl" ]] && echo "   part ${lbl#_part}: frames ${st}-$((st+cnt-1))"
@@ -1010,8 +820,7 @@ build_variant() {
       echo "   + ${stem}_${w}x${h}${lbl}_prores.mov"
     fi
     if format_enabled mp4; then
-      # H.264 yuv420p needs even dimensions; cropping makes odd sizes likely.
-      # Padding would alter the art, so skip rather than silently distort.
+      # Padding odd dimensions would alter the art.
       if (( w % 2 || h % 2 )); then
         echo "   ! ${w}x${h} is odd — mp4 skipped (H.264 needs even dimensions;"
         echo "     adjust --crop or use an even --scale)"
@@ -1023,11 +832,9 @@ build_variant() {
       fi
     fi
     if format_enabled apng; then
-      # native-resolution APNG (always)
       ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
         -frames:v "$cnt" -plays 0 -pix_fmt rgba -f apng "$vdir/${stem}_1x${lbl}.png"
       echo "   + ${stem}_1x${lbl}.png  (native ${dim}, web APNG)"
-      # upscaled APNG at the requested scale (skip when scale is 1 = same file)
       if [[ "$SCALE" != "1" ]]; then
         ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
           -frames:v "$cnt" -vf "$vf" -plays 0 -pix_fmt rgba -f apng "$vdir/${stem}_${SCALE}x${lbl}.png"
@@ -1036,10 +843,8 @@ build_variant() {
     fi
     if format_enabled webp; then
       if (( HAVE_WEBP_ANIM )); then
-        # native-resolution WebP (always) — mirrors the 1x APNG
         webp_anim "$rdir" "$st" "$cnt" "$vdir/${stem}_1x${lbl}.webp"
         echo "   + ${stem}_1x${lbl}.webp  (native ${dim}, web WebP)"
-        # upscaled WebP at the requested scale
         if [[ "$webp_up" == 1 ]]; then
           webp_anim "$updir" "$st" "$cnt" "$vdir/${stem}_${SCALE}x${lbl}.webp"
           echo "   + ${stem}_${SCALE}x${lbl}.webp  (${w}x${h}, web WebP)"
@@ -1049,20 +854,16 @@ build_variant() {
   done < <(segments "$total")
 }
 
-# --- assemble palette list: each entry is "name|comma,targets" ----
 PALETTES=()
 if (( ALL_THEMES )); then
   [[ -z "$PALETTE" ]] || die "-A/--all-themes and -p/--palette are mutually exclusive"
   while IFS= read -r line; do
     nm="$(echo "${line%%=*}" | tr -d ' ')"; [[ -z "$nm" ]] && continue
-    # theme_colors dies inside the command substitution, which only kills the
-    # subshell — so check the result here rather than building an empty palette
+    # Assignment must propagate failures from its command substitution.
     cols="$(theme_colors "$nm")" || exit 1
     PALETTES+=("$nm|$cols")
   done < <(grep -E '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=' "$THEMES")
 elif [[ -n "$PALETTE" ]]; then
-  # resolve in the main shell: resolve_palette dies on a bad value, and a die
-  # inside a command substitution would only kill the subshell
   PAL_RESOLVED="$(resolve_palette "$PALETTE")" || exit 1
   PALETTES+=("$PAL_RESOLVED")
 else
@@ -1070,17 +871,11 @@ else
 fi
 [[ ${#PALETTES[@]} -gt 0 ]] || die "no palettes to build (empty $THEMES?)"
 
-# --- main: every source x every palette ---------------------------
-# Resolve the output directory before anything is built and say where it is:
-# it is relative to $PWD, not to the source, so a batch gathered from several
-# places lands in one predictable spot and nothing is written beside someone's
-# originals. list_sources also uses it to avoid re-ingesting its own output.
 mkdir -p "$OUTDIR"
 echo "output -> $(cd "$OUTDIR" && pwd)"
 
 FOUND=0
-SEEN_BASES=" "   # output folders are named after the source's basename, so two
-                 # inputs sharing one would overwrite each other. Say so.
+SEEN_BASES=" "
 while IFS= read -r srcf; do
   FOUND=1
   srcbase="$(basename "${srcf%.*}")"
@@ -1088,13 +883,11 @@ while IFS= read -r srcf; do
     echo ">> warn  $srcf — another input is also named '$srcbase'; they share $OUTDIR/$srcbase" >&2
   fi
   SEEN_BASES="${SEEN_BASES}${srcbase} "
-  # 1 = skip this source and carry on; anything else is fatal.
-  # NB: capture the status via `|| rc=$?` — `if ! cmd` would reset $? to 0.
+  # `if ! cmd` would lose the original status.
   rc=0; fdir="$(prepare_frames "$srcf")" || rc=$?
   if (( rc == 1 )); then continue; fi
   if (( rc != 0 )); then exit 1; fi   # 2 is the internal "fatal" signal, not an exit code
 
-  # per-source upscale factor: 'auto' depends on this source's dimensions
   dim0="$(magick identify -format '%wx%h' "$(ls "$fdir"/*.png | head -1)")"
   SCALE="$(resolve_scale "${dim0%x*}" "${dim0#*x}")"
 
@@ -1104,7 +897,6 @@ while IFS= read -r srcf; do
     if [[ ${#SHADES[@]} -eq 0 ]]; then
       echo ">> skip  $srcbase — no colors detected" >&2; continue
     fi
-    # Guard recoloring: it emits two -opaque operations per shade.
     if (( ${#SHADES[@]} > MAX_SHADES )); then
       echo "error: $srcbase has ${#SHADES[@]} distinct shades (limit $MAX_SHADES)." >&2
       echo "       repixel is for flat / pixel art. Raise with --max-shades N." >&2
