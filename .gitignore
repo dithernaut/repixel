@@ -1,0 +1,8 @@
+# Local input and output dirs
+src/
+out/
+
+# Legacy frame cache location.
+.cache/
+
+.DS_Store

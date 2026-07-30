@@ -1,0 +1,649 @@
+#!/usr/bin/env bash
+#
+# repixel — recolor flat / pixel-art images and animations into themed
+# variants and export editable video (ProRes + MP4) plus web assets
+# (APNG/PNG + WebP), upscaled with nearest-neighbor so pixels stay crisp.
+#
+# Works on ANY file, anywhere — pass paths. Nothing is processed unless you
+# name it. Inputs may be files or directories (a directory processes the
+# images directly inside it; add -r to walk it recursively).
+#
+# Animated inputs (APNG / GIF / animated WebP) produce video + animation.
+# Single-frame inputs produce stills — the mov/mp4 formats are skipped.
+#
+# Colors in a theme are given DARKEST -> LIGHTEST and map positionally
+# onto each source's shades (also sorted darkest -> lightest). A theme
+# whose color count doesn't match a given source is skipped with a note.
+#
+# Splitting: -s / --split FRAME[,FRAME...] cuts each clip at those exact
+# frames. e.g. -s 157 -> part1 = frames 1..157, part2 = 158..end.
+#
+# Cropping: -c / --crop XSTART,YSTART,XEND,YEND crops every frame before
+# anything else happens, so recoloring, scaling and encoding all work on
+# the cropped region. Bounds are half-open — -c 2,2,100,100 yields 98x98.
+#
+# Output layout:  <outdir>/<source>/<theme>/<source>_<theme>_<WxH>[_partN].<ext>
+# <outdir> defaults to ./out in the current directory (-o to change it).
+#
+# Usage:
+#   repixel logo.png                          # one file, all themes
+#   repixel a.png b.gif ~/Desktop/sprites     # several inputs at once
+#   repixel ~/Desktop/sprites -r              # a directory tree
+#   repixel logo.png -p dithernaut            # one theme
+#   repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
+#   repixel logo.png -x 8 -o ~/Desktop/out    # scale 8x, custom output dir
+#   repixel clip.png -c 2,2,100,100           # crop a 98x98 box, then build
+#   repixel clip.png -s 157                   # split at frame 157
+#   repixel clip.png -s 50,120                # split into 3 parts
+#   repixel --list-themes
+#   repixel logo.png --list-colors            # shades of the given sources
+#
+# Options:
+#   -p, --palette PAL    A theme name from themes.conf, OR a comma-separated
+#                        hex list darkest->lightest. Default: all themes.
+#                        (-t / --theme / --colors are the same flag)
+#   -o, --out DIR        Output directory (default: ./out)
+#   -r, --recursive      Recurse into directory inputs
+#   -c, --crop BOX       Crop XSTART,YSTART,XEND,YEND before everything else
+#   -s, --split FRAMES   Comma-separated frame(s) to split each clip at
+#   -x, --scale N        Integer upscale factor (default 16)
+#   -f, --fps N          Frames per second (default 12)
+#       --formats LIST   Comma list of mov,mp4,apng,webp (default all four)
+#       --themes FILE    Theme file to read. Without it, the first of these
+#                        that exists wins:
+#                          ~/.config/repixel/themes.conf   (your own)
+#                          themes.conf beside this script  (git checkout)
+#                          ../share/repixel/themes.conf    (installed copy)
+#                        --list-themes prints which one is in use.
+#       --reextract      Force re-extraction of source frames
+#       --list-themes    List themes and exit
+#       --list-colors    Print each source's shades (darkest->lightest) and exit
+#   -h, --help           Show this help
+#
+set -euo pipefail
+
+# --- locate the script's own directory (for the default theme file) ---
+# Follow symlinks: installing via `ln -s repixel /usr/local/bin/repixel` must
+# still find themes.conf next to the real file, not next to the link.
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do
+  SELF_DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+  SELF="$(readlink "$SELF")"
+  [[ "$SELF" != /* ]] && SELF="$SELF_DIR/$SELF"
+done
+ROOT="$(cd -P "$(dirname "$SELF")" && pwd)"
+
+# Where to look for themes.conf, first hit wins (--themes overrides all):
+#   1. your own file, so a package-managed default is never something you
+#      have to edit — and never clobbers your themes on upgrade
+#   2. beside the script, i.e. a git checkout run in place
+#   3. ../share/repixel relative to the script — Homebrew installs the script
+#      into bin/ and support files into share/<name>/ (a formula's pkgshare)
+THEMES=""
+THEME_CANDIDATES=(
+  "${XDG_CONFIG_HOME:-$HOME/.config}/repixel/themes.conf"
+  "$ROOT/themes.conf"
+  "$(cd -P "$ROOT/.." && pwd)/share/repixel/themes.conf"
+)
+
+# Frames are scratch, not output: keep them out of the user's directories.
+CACHEROOT="${XDG_CACHE_HOME:-$HOME/.cache}/repixel"
+
+# --- defaults ---
+INPUTS=()
+OUTDIR="out"
+RECURSIVE=0
+SCALE=16
+FPS=12
+SPLIT=""
+CROP=""
+FORMATS="mov,mp4,apng,webp"
+PALETTE=""
+REEXTRACT=0
+THEMES_EXPLICIT=0
+
+die() { echo "error: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+usage() { sed -n '2,/^set -/p' "$SELF" | sed '/^set -/d; s/^# \{0,1\}//'; exit 0; }
+
+# --- parse args ---
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    # one flag, four spellings: a palette is a theme name OR a hex list, so
+    # there's nothing to arbitrate between. Last one wins if repeated.
+    -t|--theme|-p|--palette|--colors) PALETTE="$2"; shift 2;;
+    -o|--out)       OUTDIR="$2"; shift 2;;
+    -r|--recursive) RECURSIVE=1; shift;;
+    -c|--crop)      CROP="$2"; shift 2;;
+    -s|--split)     SPLIT="$2"; shift 2;;
+    -x|--scale)     SCALE="$2"; shift 2;;
+    -f|--fps)       FPS="$2"; shift 2;;
+    --formats)      FORMATS="$2"; shift 2;;
+    --themes)       THEMES="$2"; THEMES_EXPLICIT=1; shift 2;;
+    --reextract)    REEXTRACT=1; shift;;
+    --list-themes)  LIST_THEMES=1; shift;;
+    --list-colors)  LIST_COLORS=1; shift;;
+    -h|--help)      usage;;
+    --)             shift; while [[ $# -gt 0 ]]; do INPUTS+=("$1"); shift; done;;
+    -*)             die "unknown option: $1 (try --help)";;
+    *)              INPUTS+=("$1"); shift;;
+  esac
+done
+
+need ffmpeg; need magick
+
+if (( THEMES_EXPLICIT )); then
+  [[ -f "$THEMES" ]] || die "theme file not found: $THEMES"
+else
+  for cand in "${THEME_CANDIDATES[@]}"; do
+    [[ -f "$cand" ]] && { THEMES="$cand"; break; }
+  done
+  if [[ -z "$THEMES" ]]; then
+    echo "error: no theme file found. Looked in:" >&2
+    printf '  %s\n' "${THEME_CANDIDATES[@]}" >&2
+    echo "Create the first one, or pass --themes FILE." >&2
+    exit 1
+  fi
+fi
+
+# animated WebP needs libwebp's img2webp, stills need cwebp (ffmpeg and
+# ImageMagick both commonly ship without the webp *encoder*). Missing them
+# only disables webp output; everything else still builds.
+HAVE_WEBP_ANIM=0
+HAVE_WEBP_STILL=0
+case ",$FORMATS," in *,webp,*)
+  command -v img2webp >/dev/null 2>&1 && HAVE_WEBP_ANIM=1
+  command -v cwebp    >/dev/null 2>&1 && HAVE_WEBP_STILL=1
+  if (( ! HAVE_WEBP_ANIM || ! HAVE_WEBP_STILL )); then
+    echo "note: libwebp tools not found — skipping webp (brew install webp)" >&2
+  fi ;;
+esac
+
+# per-frame duration in ms for webp (ffmpeg takes fps directly)
+DUR=$(( 1000 / FPS ))
+WEBP_MAX=16383   # hard limit of the WebP format in either dimension
+
+# --- helpers -------------------------------------------------------
+
+# normalize a hex string -> 6 uppercase hex digits, no '#'
+norm_hex() {
+  local h="${1#\#}"
+  [[ "$h" =~ ^[0-9A-Fa-f]{6}$ ]] || die "invalid hex color: '$1'"
+  echo "$h" | tr '[:lower:]' '[:upper:]'
+}
+
+# read a theme's colors from the theme file -> comma list
+theme_colors() {
+  local name="$1" line
+  line="$(grep -E "^[[:space:]]*${name}[[:space:]]*=" "$THEMES" 2>/dev/null | head -1)" || true
+  [[ -n "$line" ]] || die "theme not found: $name (see --list-themes)"
+  echo "${line#*=}" | tr -d ' '
+}
+
+theme_exists() {
+  grep -qE "^[[:space:]]*$1[[:space:]]*=" "$THEMES" 2>/dev/null
+}
+
+# --palette takes EITHER a comma-separated hex list OR the name of a theme
+# in the theme file, so `-p dithernaut-alt` works like `-t dithernaut-alt`.
+# Echoes "name|comma,targets". Theme names are matched first: a theme named
+# like a bare hex triplet is far less likely than someone meaning the theme
+# they just added to the config.
+resolve_palette() {
+  local v="$1" stripped
+  if theme_exists "$v"; then
+    echo "$v|$(theme_colors "$v")"; return
+  fi
+  stripped="$(echo "$v" | tr -d ' ')"
+  if [[ "$stripped" =~ ^#?[0-9A-Fa-f]{6}(,#?[0-9A-Fa-f]{6})*$ ]]; then
+    echo "custom|$stripped"; return
+  fi
+  die "--palette '$v': not a theme in $THEMES (see --list-themes), and not a comma-separated hex list"
+}
+
+list_themes() {
+  echo "Themes in $THEMES:"
+  grep -E '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=' "$THEMES" \
+    | sed -E 's/[[:space:]]*=[[:space:]]*/  ->  /'
+}
+
+# absolute path of a file, without requiring realpath/readlink -f
+abspath() {
+  local d b
+  d="$(cd "$(dirname "$1")" && pwd)"; b="$(basename "$1")"
+  echo "$d/$b"
+}
+
+# "size mtime" of a file — the two cheap things that change when it's edited
+file_stamp() {
+  stat -f '%z %m' "$1" 2>/dev/null || stat -c '%s %Y' "$1"
+}
+
+# cache key for a source: readable basename + a hash of its full path, so two
+# files with the same name in different directories don't share a cache dir
+src_key() {
+  local abs; abs="$(abspath "$1")"
+  printf '%s-%s\n' "$(basename "${1%.*}")" "$(printf '%s' "$abs" | cksum | cut -d' ' -f1)"
+}
+
+# Directory inputs pick up these; explicitly named files are never filtered
+# (if you point at a file, you meant it). Spelled as -iname clauses rather
+# than -iregex because BSD and GNU find disagree about regex flavors.
+IMAGE_FIND=(
+  '(' -iname '*.png' -o -iname '*.apng' -o -iname '*.gif' -o -iname '*.webp' ')'
+)
+
+# resolve the inputs -> prints one source path per line, de-duplicated.
+# Anything inside the output directory is dropped: scanning a folder you have
+# already built into (`repixel . -r`) must not feed the results back in.
+list_sources() {
+  local in outabs=""
+  [[ -d "$OUTDIR" ]] && outabs="$(cd "$OUTDIR" && pwd)/"
+  for in in "${INPUTS[@]}"; do
+    if [[ -f "$in" ]]; then
+      echo "$in"
+    elif [[ -d "$in" ]]; then
+      if (( RECURSIVE )); then
+        find "$in" -type f "${IMAGE_FIND[@]}" | sort
+      else
+        find "$in" -maxdepth 1 -type f "${IMAGE_FIND[@]}" | sort
+      fi
+    else
+      die "input not found: $in"
+    fi
+  done | awk 'NF && !seen[$0]++' | while IFS= read -r f; do
+    [[ -n "$outabs" && "$(abspath "$f")" == "$outabs"* ]] && continue
+    echo "$f"
+  done
+}
+
+# extract a source's frames into cache, echo the frames dir. Re-extracts when
+# the file changed underneath us (size or mtime), so editing a source and
+# re-running Just Works without --reextract.
+extract_frames() {
+  local src="$1" kdir fdir stamp prev=""
+  kdir="$CACHEROOT/$(src_key "$src")"
+  fdir="$kdir/frames"
+  stamp="$(file_stamp "$src")"
+  [[ -f "$kdir/source.stamp" ]] && prev="$(cat "$kdir/source.stamp")"
+  if [[ "$REEXTRACT" == 1 || "$stamp" != "$prev" \
+        || ! -d "$fdir" || -z "$(ls -A "$fdir" 2>/dev/null)" ]]; then
+    rm -rf "$kdir"; mkdir -p "$fdir"
+    ffmpeg -nostdin -v error -y -i "$src" "$fdir/f_%04d.png"
+    echo "$stamp" > "$kdir/source.stamp"
+  fi
+  echo "$fdir"
+}
+
+# --crop geometry. Bounds are half-open (XEND exclusive), so 2,2,100,100
+# -> offset 2,2 size 98x98. The shape of the option is validated once, up
+# front in the main shell (below); only the per-source bounds check runs
+# later, inside a subshell, where it reports via exit status instead.
+CROP_X=0; CROP_Y=0; CROP_W=0; CROP_H=0; CROP_X2=0; CROP_Y2=0
+
+validate_crop() {
+  local -a c
+  IFS=',' read -ra c <<< "$CROP"
+  [[ ${#c[@]} -eq 4 ]] || die "--crop needs 4 values: XSTART,YSTART,XEND,YEND (got '$CROP')"
+  local v; for v in "${c[@]}"; do
+    [[ "$v" =~ ^[0-9]+$ ]] || die "--crop values must be non-negative integers (got '$v')"
+  done
+  CROP_X="${c[0]}"; CROP_Y="${c[1]}"; CROP_X2="${c[2]}"; CROP_Y2="${c[3]}"
+  CROP_W=$(( CROP_X2 - CROP_X )); CROP_H=$(( CROP_Y2 - CROP_Y ))
+  (( CROP_W > 0 && CROP_H > 0 )) \
+    || die "--crop is empty: XEND/YEND must exceed XSTART/YSTART (got '$CROP')"
+}
+
+# A crop that doesn't fit is source-specific, not a malformed option: fatal
+# when a single file was named explicitly, otherwise skipped like a shade/theme
+# mismatch so the rest of the batch still runs.
+#   0 = fits    1 = skip this source    2 = fatal
+check_crop_bounds() {
+  local srcw="$1" srch="$2" srcbase="$3"
+  (( CROP_X2 <= srcw && CROP_Y2 <= srch )) && return 0
+  if (( SINGLE_SOURCE )); then
+    echo "error: --crop ${CROP} exceeds $srcbase (${srcw}x${srch})" >&2
+    return 2
+  fi
+  echo ">> skip  $srcbase — crop ${CROP} exceeds source (${srcw}x${srch})" >&2
+  return 1
+}
+
+# extract frames, then crop them if --crop was given. Cropping here (rather
+# than at encode time) means shade detection, recoloring, scaling and every
+# output format all see the cropped region. Echoes the frames dir to use.
+prepare_frames() {
+  local src="$1" fdir base srcw srch cdir
+  fdir="$(extract_frames "$src")"
+  [[ -n "$CROP" ]] || { echo "$fdir"; return; }
+
+  base="$(basename "${src%.*}")"
+  local d; d="$(magick identify -format '%wx%h' "$(ls "$fdir"/*.png | head -1)")"
+  srcw="${d%x*}"; srch="${d#*x}"
+  check_crop_bounds "$srcw" "$srch" "$base" || return $?
+
+  # keyed by geometry so different crops don't clobber each other's cache
+  cdir="$(dirname "$fdir")/crop_${CROP_W}x${CROP_H}+${CROP_X}+${CROP_Y}"
+  if [[ "$REEXTRACT" == 1 || ! -d "$cdir" || -z "$(ls -A "$cdir" 2>/dev/null)" ]]; then
+    rm -rf "$cdir"; mkdir -p "$cdir"
+    # One ffmpeg pass, not one magick per frame — far faster. format=rgba is
+    # essential: these sources are grayscale, and a crop written back out as a
+    # Gray-colorspace PNG makes every later color fill collapse to its gray
+    # value (i.e. near-black output). Cropping never resamples, so this stays
+    # pixel-exact.
+    ffmpeg -nostdin -v error -y -start_number 1 -i "$fdir/f_%04d.png" \
+      -vf "format=rgba,crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y}" \
+      "$cdir/f_%04d.png"
+  fi
+  echo "$cdir"
+}
+
+# detect a source's shades, sorted darkest->lightest, one #RRGGBB per line
+# (portable: luminance computed in bash, no gawk/strtonum needed)
+source_shades() {
+  local fdir="$1" hex r g b lum
+  magick "$fdir"/*.png -append -depth 8 -unique-colors txt: 2>/dev/null \
+    | grep -oiE '#[0-9A-F]{6}' | tr '[:lower:]' '[:upper:]' | sort -u \
+    | while read -r hex; do
+        r=$((16#${hex:1:2})); g=$((16#${hex:3:2})); b=$((16#${hex:5:2}))
+        lum=$(( 299*r + 587*g + 114*b ))
+        printf '%d %s\n' "$lum" "$hex"
+      done | sort -n -k1,1 | awk '{print $2}'
+}
+
+# encode an animated WebP from a frame range in DIR -> OUT.
+# img2webp defaults to lossless and -loop 0 (infinite), which is exactly
+# what pixel art wants: colors stay bit-exact, animation loops forever.
+# args: dir start count outfile
+webp_anim() {
+  local dir="$1" st="$2" cnt="$3" out="$4"
+  local -a files=(); local i n
+  for (( i=0; i<cnt; i++ )); do
+    printf -v n 'f_%04d.png' "$((st+i))"
+    files+=("$dir/$n")
+  done
+  # img2webp chatters to stderr even without -v; hold it back and only
+  # surface it if the encode actually fails.
+  local log
+  if ! log="$(img2webp -loop 0 -lossless -d "$DUR" "${files[@]}" -o "$out" 2>&1)"; then
+    echo "$log" >&2
+    die "img2webp failed for $out"
+  fi
+}
+
+# encode a single lossless WebP still. args: infile outfile
+webp_still() {
+  local log
+  if ! log="$(cwebp -quiet -lossless -exact "$1" -o "$2" 2>&1)"; then
+    echo "$log" >&2
+    die "cwebp failed for $2"
+  fi
+}
+
+# build segment list for a clip of TOTAL frames given $SPLIT.
+# echoes lines "start count label" (label empty when not splitting).
+segments() {
+  local total="$1"
+  if [[ -z "$SPLIT" ]]; then echo "1 $total "; return; fi
+  local -a pts=() rawp; local p
+  IFS=',' read -ra rawp <<< "$SPLIT"
+  for p in "${rawp[@]}"; do
+    [[ "$p" =~ ^[0-9]+$ ]] || die "invalid split frame: '$p'"
+    (( p >= 1 && p < total )) || die "split frame $p out of range (1..$((total-1)) for $total frames)"
+    pts+=("$p")
+  done
+  # sort unique
+  local sorted; sorted="$(printf '%s\n' "${pts[@]}" | sort -n -u)"
+  local prev=1 idx=1
+  while IFS= read -r p; do
+    echo "$prev $((p-prev+1)) _part${idx}"
+    prev=$((p+1)); idx=$((idx+1))
+  done <<< "$sorted"
+  echo "$prev $((total-prev+1)) _part${idx}"
+}
+
+# validate --crop's shape once, here in the main shell (and after the
+# helpers are defined), so a malformed option fails loudly rather than
+# dying inside a command substitution where its exit status gets swallowed
+if [[ -n "$CROP" ]]; then validate_crop; fi
+
+# --- info modes ----------------------------------------------------
+if [[ "${LIST_THEMES:-0}" == 1 ]]; then list_themes; exit 0; fi
+
+[[ ${#INPUTS[@]} -gt 0 ]] \
+  || die "no input given — pass one or more files or directories (try --help)"
+
+# whether exactly one source was named: decides whether a bad --crop is fatal
+SINGLE_SOURCE=0
+[[ ${#INPUTS[@]} -eq 1 && -f "${INPUTS[0]}" ]] && SINGLE_SOURCE=1
+
+if [[ "${LIST_COLORS:-0}" == 1 ]]; then
+  found=0
+  while IFS= read -r srcf; do
+    found=1
+    rc=0; fdir="$(prepare_frames "$srcf")" || rc=$?
+    if (( rc == 1 )); then continue; fi
+    if (( rc != 0 )); then exit "$rc"; fi
+    echo "$(basename "$srcf")  (darkest -> lightest):"
+    source_shades "$fdir" | nl -w2 -s'. ' | sed 's/^/   /'
+  done < <(list_sources)
+  (( found )) || die "no image files found in the given input(s)"
+  exit 0
+fi
+
+# --- build one variant ---------------------------------------------
+# args: srcbase  palette_name  "comma,targets"  frames_dir  shades...
+build_variant() {
+  local srcbase="$1" name="$2" targets_csv="$3" fdir="$4"; shift 4
+  local -a shades=("$@")            # source shades #RRGGBB darkest->lightest
+
+  # parse + validate targets against this source's shade count
+  local -a targets=() raw
+  IFS=',' read -ra raw <<< "$targets_csv"
+  local t; for t in "${raw[@]}"; do targets+=("$(norm_hex "$t")"); done
+  if [[ ${#targets[@]} -ne ${#shades[@]} ]]; then
+    echo ">> skip  $srcbase / $name — theme has ${#targets[@]} colors, source has ${#shades[@]} shades"
+    return 0
+  fi
+
+  # frame count for this clip. One frame = a still: no video, no splitting.
+  local total; total=$(ls "$fdir"/*.png | wc -l | tr -d ' ')
+  local still=0; (( total == 1 )) && still=1
+
+  local kind=" fps=${FPS}"; (( still )) && kind=" still"
+  echo ">> $srcbase / $name  (${targets[*]})  scale=${SCALE}x${kind}${CROP:+ crop=$CROP}${SPLIT:+ split=$SPLIT}"
+
+  if (( still )) && [[ -n "$SPLIT" ]]; then
+    echo "   ! --split ignored — $srcbase is a single frame"
+  fi
+  # up-front split validation (in the main shell, so it can die loudly)
+  if (( ! still )) && [[ -n "$SPLIT" ]]; then
+    local sp; local -a sps
+    IFS=',' read -ra sps <<< "$SPLIT"
+    for sp in "${sps[@]}"; do
+      [[ "$sp" =~ ^[0-9]+$ ]] || die "invalid split frame: '$sp'"
+      (( sp >= 1 && sp < total )) || die "split frame $sp out of range for $srcbase (1..$((total-1)), $total frames)"
+    done
+  fi
+
+  # recolor frames (collision-proof: source->sentinel, then sentinel->target).
+  # Lives beside this source's own frame cache, so two same-named files from
+  # different directories never share a recolor dir.
+  local rdir="$(dirname "$fdir")/recolored/$name"
+  rm -rf "$rdir"; mkdir -p "$rdir"
+  local i f b sentinel; local -a args_src args_dst
+  for f in "$fdir"/*.png; do
+    b="$(basename "$f")"
+    args_src=(); args_dst=()
+    for i in "${!shades[@]}"; do
+      printf -v sentinel '#00FF%02X' "$((i+1))"
+      args_src+=(-fuzz 0 -fill "$sentinel" -opaque "${shades[$i]}")
+      args_dst+=(-fuzz 0 -fill "#${targets[$i]}" -opaque "$sentinel")
+    done
+    # -colorspace sRGB -type TrueColor is load-bearing: these sources are
+    # grayscale, and on a Gray-colorspace image every color fill collapses to
+    # its gray value (black output). Promote before recoloring, always.
+    magick "$f" -alpha off -colorspace sRGB -type TrueColor \
+      "${args_src[@]}" "${args_dst[@]}" "$rdir/$b"
+  done
+
+  # dimensions
+  local dim w h
+  dim="$(magick identify -format '%wx%h' "$(ls "$fdir"/*.png | head -1)")"
+  w=$(( ${dim%x*} * SCALE )); h=$(( ${dim#*x} * SCALE ))
+
+  local vdir="$OUTDIR/$srcbase/$name"; mkdir -p "$vdir"
+  local stem="${srcbase}_${name}"
+  # format=rgba first: swscale rounds pal8->RGB by +/-1, which would shift the
+  # exact theme colors. Converting to rgba before scaling keeps them exact.
+  local vf="format=rgba,scale=iw*${SCALE}:ih*${SCALE}:flags=neighbor"
+
+  # --- stills: one frame in, PNG + WebP out (mov/mp4/animation don't apply)
+  if (( still )); then
+    local one up=""
+    one="$(ls "$rdir"/*.png | head -1)"
+    # Render the upscaled frame once, into the cache, so PNG and WebP output
+    # are independent of each other (--formats webp alone still works).
+    # -scale is ImageMagick's nearest-neighbor path: on an integer factor it
+    # replicates pixels exactly, so theme colors stay bit-exact.
+    if [[ "$SCALE" != "1" ]]; then
+      up="$rdir/up_${SCALE}x.png"
+      magick "$one" -scale "${w}x${h}!" "$up"
+    fi
+    case ",$FORMATS," in *,apng,*|*,png,*)
+      cp "$one" "$vdir/${stem}_1x.png"
+      echo "   + ${stem}_1x.png  (native ${dim})"
+      if [[ -n "$up" ]]; then
+        cp "$up" "$vdir/${stem}_${SCALE}x.png"
+        echo "   + ${stem}_${SCALE}x.png  (${w}x${h})"
+      fi ;;
+    esac
+    case ",$FORMATS," in *,webp,*)
+      if (( HAVE_WEBP_STILL )); then
+        webp_still "$one" "$vdir/${stem}_1x.webp"
+        echo "   + ${stem}_1x.webp  (native ${dim})"
+        if [[ -n "$up" ]]; then
+          if (( w <= WEBP_MAX && h <= WEBP_MAX )); then
+            webp_still "$up" "$vdir/${stem}_${SCALE}x.webp"
+            echo "   + ${stem}_${SCALE}x.webp  (${w}x${h})"
+          else
+            echo "   ! ${w}x${h} exceeds WebP's ${WEBP_MAX}px limit — ${SCALE}x webp skipped"
+          fi
+        fi
+      fi ;;
+    esac
+    case ",$FORMATS," in *,mov,*|*,mp4,*)
+      echo "   . mov/mp4 skipped — $srcbase is a single frame" ;;
+    esac
+    return 0
+  fi
+
+  # img2webp can't scale, so pre-render upscaled frames once per variant.
+  local updir="" webp_up=0
+  if (( HAVE_WEBP_ANIM )) && [[ "$SCALE" != "1" ]]; then
+    if (( w <= WEBP_MAX && h <= WEBP_MAX )); then
+      webp_up=1
+      updir="$rdir/up"; rm -rf "$updir"; mkdir -p "$updir"
+      # single ffmpeg pass rather than one magick per frame; same nearest-
+      # neighbor filter chain the video encoders use, so it stays bit-exact
+      ffmpeg -nostdin -v error -y -start_number 1 -i "$rdir/f_%04d.png" \
+        -vf "$vf" "$updir/f_%04d.png"
+    else
+      echo "   ! ${w}x${h} exceeds WebP's ${WEBP_MAX}px limit — ${SCALE}x webp skipped"
+    fi
+  fi
+
+  # encode each segment (one segment covering the whole clip when not splitting)
+  local st cnt lbl
+  while read -r st cnt lbl; do
+    [[ -n "$lbl" ]] && echo "   part ${lbl#_part}: frames ${st}-$((st+cnt-1))"
+    case ",$FORMATS," in *,mov,*)
+      ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
+        -frames:v "$cnt" -vf "$vf" -c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le \
+        "$vdir/${stem}_${w}x${h}${lbl}_prores.mov"
+      echo "   + ${stem}_${w}x${h}${lbl}_prores.mov" ;;
+    esac
+    case ",$FORMATS," in *,mp4,*)
+      # H.264 yuv420p needs even dimensions; cropping makes odd sizes likely.
+      # Padding would alter the art, so skip rather than silently distort.
+      if (( w % 2 || h % 2 )); then
+        echo "   ! ${w}x${h} is odd — mp4 skipped (H.264 needs even dimensions;"
+        echo "     adjust --crop or use an even --scale)"
+      else
+        ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
+          -frames:v "$cnt" -vf "$vf" -c:v libx264 -pix_fmt yuv420p -crf 12 -movflags +faststart \
+          "$vdir/${stem}_${w}x${h}${lbl}.mp4"
+        echo "   + ${stem}_${w}x${h}${lbl}.mp4"
+      fi ;;
+    esac
+    case ",$FORMATS," in *,apng,*)
+      # native-resolution APNG (always)
+      ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
+        -frames:v "$cnt" -plays 0 -pix_fmt rgba -f apng "$vdir/${stem}_1x${lbl}.png"
+      echo "   + ${stem}_1x${lbl}.png  (native ${dim}, web APNG)"
+      # upscaled APNG at the requested scale (skip when scale is 1 = same file)
+      if [[ "$SCALE" != "1" ]]; then
+        ffmpeg -nostdin -v error -y -framerate "$FPS" -start_number "$st" -i "$rdir/f_%04d.png" \
+          -frames:v "$cnt" -vf "$vf" -plays 0 -pix_fmt rgba -f apng "$vdir/${stem}_${SCALE}x${lbl}.png"
+        echo "   + ${stem}_${SCALE}x${lbl}.png  (${w}x${h}, web APNG)"
+      fi ;;
+    esac
+    case ",$FORMATS," in *,webp,*)
+      if (( HAVE_WEBP_ANIM )); then
+        # native-resolution WebP (always) — mirrors the 1x APNG
+        webp_anim "$rdir" "$st" "$cnt" "$vdir/${stem}_1x${lbl}.webp"
+        echo "   + ${stem}_1x${lbl}.webp  (native ${dim}, web WebP)"
+        # upscaled WebP at the requested scale
+        if [[ "$webp_up" == 1 ]]; then
+          webp_anim "$updir" "$st" "$cnt" "$vdir/${stem}_${SCALE}x${lbl}.webp"
+          echo "   + ${stem}_${SCALE}x${lbl}.webp  (${w}x${h}, web WebP)"
+        fi
+      fi ;;
+    esac
+  done < <(segments "$total")
+}
+
+# --- assemble palette list: each entry is "name|comma,targets" ----
+PALETTES=()
+if [[ -n "$PALETTE" ]]; then
+  # resolve in the main shell: resolve_palette dies on a bad value, and a die
+  # inside a command substitution would only kill the subshell
+  PAL_RESOLVED="$(resolve_palette "$PALETTE")" || exit 1
+  PALETTES+=("$PAL_RESOLVED")
+else
+  while IFS= read -r line; do
+    nm="$(echo "${line%%=*}" | tr -d ' ')"; [[ -z "$nm" ]] && continue
+    PALETTES+=("$nm|$(theme_colors "$nm")")
+  done < <(grep -E '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=' "$THEMES")
+fi
+[[ ${#PALETTES[@]} -gt 0 ]] || die "no palettes to build (empty $THEMES?)"
+
+# --- main: every source x every palette ---------------------------
+FOUND=0
+SEEN_BASES=" "   # output folders are named after the source's basename, so two
+                 # inputs sharing one would overwrite each other. Say so.
+while IFS= read -r srcf; do
+  FOUND=1
+  srcbase="$(basename "${srcf%.*}")"
+  if [[ "$SEEN_BASES" == *" $srcbase "* ]]; then
+    echo ">> warn  $srcf — another input is also named '$srcbase'; they share $OUTDIR/$srcbase" >&2
+  fi
+  SEEN_BASES="${SEEN_BASES}${srcbase} "
+  # 1 = skip this source and carry on; anything else is fatal.
+  # NB: capture the status via `|| rc=$?` — `if ! cmd` would reset $? to 0.
+  rc=0; fdir="$(prepare_frames "$srcf")" || rc=$?
+  if (( rc == 1 )); then continue; fi
+  if (( rc != 0 )); then exit "$rc"; fi
+  SHADES=()
+  while IFS= read -r ln; do [[ -n "$ln" ]] && SHADES+=("$ln"); done < <(source_shades "$fdir")
+  if [[ ${#SHADES[@]} -eq 0 ]]; then
+    echo ">> skip  $srcbase — no colors detected" >&2; continue
+  fi
+  for pal in "${PALETTES[@]}"; do
+    build_variant "$srcbase" "${pal%%|*}" "${pal#*|}" "$fdir" "${SHADES[@]}"
+  done
+done < <(list_sources)
+
+(( FOUND )) || die "no image files found in the given input(s)"
+
+echo "done -> $OUTDIR"
