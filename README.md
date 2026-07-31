@@ -2,9 +2,9 @@
 
 ![repixel cover](docs/cover.png)
 
-Recolor and rescale pixel art still and animated images.
+Recolor and rescale still and animated pixel art images.
 
-Always upscaled with nearest-neighbor so the pixels stay perfectly crisp.
+Always upscaled with nearest-neighbor so the pixels stay crisp.
 
 ```bash
 repixel ~/Desktop/logo.png -p gameboy -x 8
