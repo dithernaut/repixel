@@ -334,6 +334,25 @@ check "--formats mov gives nothing else"  "no"  "$(hasglob "$O/anim/mono/*.mp4")
 O="$WORK/f4"; run "$FIX/anim.png" -p mono -o "$O" --formats png >/dev/null
 check "--formats png is accepted as apng" "yes" "$(has "$O/anim/mono/anim_mono_1x.png")"
 
+O="$WORK/f5"; run "$FIX/still4.png" -p mono -o "$O" --formats svg >/dev/null
+check "--formats svg writes native vector" "yes" "$(has "$O/still4/mono/still4_mono_1x.svg")"
+check "--formats svg writes scaled vector" "yes" "$(has "$O/still4/mono/still4_mono_16x.svg")"
+check "svg rasterizes with bit-exact colors" "000000,555555,AAAAAA,FFFFFF" \
+  "$(colors_of "$O/still4/mono/still4_mono_1x.svg")"
+check "scaled svg declares scaled dimensions" "512x128" \
+  "$(dims_of "$O/still4/mono/still4_mono_16x.svg")"
+
+mkdir -p "$WORK/svg-batch"
+cp "$FIX/still2.png" "$WORK/svg-batch/a.png"
+cp "$FIX/still4.png" "$WORK/svg-batch/b.png"
+O="$WORK/f6"; run "$WORK/svg-batch" -o "$O" -x 1 --formats svg >/dev/null
+check "folder batch converts first PNG to SVG" "yes" "$(has "$O/a/original/a_original_1x.svg")"
+check "folder batch converts second PNG to SVG" "yes" "$(has "$O/b/original/b_original_1x.svg")"
+
+O="$WORK/f7"; OUT="$(run "$FIX/anim.png" -o "$O" --formats svg)"
+check "animated input skips svg" "yes" \
+  "$([[ "$OUT" == *"svg skipped"* && ! -e "$O/anim/original/anim_original_1x.svg" ]] && echo yes || echo no)"
+
 run "$FIX/still4.png" -p mono -o "$WORK/x" --formats nope >/dev/null 2>&1
 check "unknown format is rejected" "1" "$?"
 run "$FIX/still4.png" -p mono -o "$WORK/x" --fit sideways >/dev/null 2>&1

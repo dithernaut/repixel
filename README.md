@@ -57,6 +57,7 @@ repixel logo.png                          # preserve colors, rescale and export
 repixel logo.png -p gameboy               # one file, one theme/palette
 repixel a.png b.gif ~/sprites -p mono     # several inputs at once
 repixel ~/Desktop/sprites -p mono         # every image directly in a folder
+repixel ~/Desktop/sprites --formats svg   # every PNG in a folder to SVG
 repixel ~/Desktop/sprites -r -p mono      # ...and everything below it
 repixel logo.png -A                       # every theme in themes.conf
 repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
@@ -86,7 +87,7 @@ repixel logo.png --list-colors            # show a source's shades
 | `-x, --scale N` | integer upscale factor, or `auto` (default) |
 | `--max-dim N` | ceiling for `auto` scale, long edge (default 2560) |
 | `-f, --fps N` | frames per second (default 12) |
-| `--formats LIST` | any of `mov,mp4,apng,webp`, or `all` (default `apng,webp,mp4`) |
+| `--formats LIST` | any of `mov,mp4,apng,webp,svg`, or `all` (default `apng,webp,mp4`) |
 | `--max-shades N` | refuse a source with more than N shades (default 64) |
 | `--themes FILE` | use a different theme file |
 | `--reextract` | force re-extraction of source frames |
@@ -113,7 +114,7 @@ when that happens.
 repixel detects this from the file — you don't pass a flag.
 
 - **Animated** input (APNG, GIF, animated WebP) → MP4, APNG, WebP
-- **Single-frame** input (an ordinary PNG) → PNG and WebP stills.
+- **Single-frame** input (an ordinary PNG) → PNG, WebP, and optional SVG stills.
 
 Everything else — recoloring, cropping, nearest-neighbor upscaling, theme
 matching — is identical either way.
@@ -216,6 +217,8 @@ Files land in `<out>/<source>/<theme>/`, e.g.
 | `..._<S>x.png` | same at the `--scale` factor (skipped when scale is 1) |
 | `..._1x.webp` | native resolution WebP |
 | `..._<S>x.webp` | WebP at the `--scale` factor |
+| `..._1x.svg` | pixel grid as vector rectangles (stills only) |
+| `..._<S>x.svg` | same vector with scaled display dimensions |
 
 ### Formats
 
@@ -223,6 +226,7 @@ Default formats are `apng,webp,mp4`.
 
 - `--formats mov` creates ProRes for video editing.
 - `--formats all` creates every format.
+- `--formats svg` converts still images to true vector pixel grids. Animated inputs are skipped.
 - `png` is accepted as an alias for `apng`.
 - Invalid format names return an error.
 

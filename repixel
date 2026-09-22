@@ -4,7 +4,7 @@
 # Always upscaled with nearest-neighbor so the pixels stay perfectly crisp.
 #
 # Animated inputs (APNG / GIF / animated WebP) produce video (mp4/mov) + animated WebP/GIF.
-# Single-frame inputs produce stills (WebP and PNG)
+# Single-frame inputs produce stills (WebP, PNG, and SVG)
 #
 # Without -p or -A, source colors stay unchanged. With a palette, colors map
 # darkest to lightest; --fit adapts mismatched shade counts and --mix controls
@@ -17,6 +17,7 @@
 #   repixel logo.png                         # preserve colors, rescale/export
 #   repixel logo.png -p dithernaut            # one file, one theme
 #   repixel a.png b.gif ~/sprites -p mono     # several inputs at once
+#   repixel ~/Desktop/sprites --formats svg   # every PNG in a folder -> SVG
 #   repixel ~/Desktop/sprites -r -p mono      # a directory tree
 #   repixel logo.png -A                       # every theme in themes.conf
 #   repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
@@ -45,7 +46,7 @@
 #   -x, --scale N        Upscale factor or auto (default; up to 16x)
 #       --max-dim N      Ceiling for 'auto' scale, long edge (default 2560)
 #   -f, --fps N          Frames per second (default 12)
-#       --formats LIST   mov,mp4,apng,webp, or all (default apng,webp,mp4)
+#       --formats LIST   mov,mp4,apng,webp,svg, or all (default apng,webp,mp4)
 #       --max-shades N   Recolor limit (default 64); ignored without a palette
 #       --themes FILE    Use a different theme file
 #       --reextract      Force re-extraction of source frames
@@ -150,21 +151,48 @@ validate_positive_integer --max-shades "$MAX_SHADES"
 validate_positive_integer --fps "$FPS"
 
 FORMATS="$(echo "$FORMATS" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
-[[ "$FORMATS" == all ]] && FORMATS="mov,mp4,apng,webp"
-[[ -n "$FORMATS" ]] || die "--formats is empty (want mov,mp4,apng,webp or 'all')"
+[[ "$FORMATS" == all ]] && FORMATS="mov,mp4,apng,webp,svg"
+[[ -n "$FORMATS" ]] || die "--formats is empty (want mov,mp4,apng,webp,svg or 'all')"
 IFS=',' read -ra _fmts <<< "$FORMATS"
 _norm=()
 for _f in "${_fmts[@]}"; do
   [[ "$_f" == png ]] && _f=apng
   case "$_f" in
-    mov|mp4|apng|webp) ;;
-    *) die "--formats: unknown format '$_f' (want mov,mp4,apng,webp or 'all')";;
+    mov|mp4|apng|webp|svg) ;;
+    *) die "--formats: unknown format '$_f' (want mov,mp4,apng,webp,svg or 'all')";;
   esac
   case ",${_norm[*]-}," in *"$_f"*) ;; *) _norm+=("$_f");; esac
 done
 FORMATS="$(IFS=','; echo "${_norm[*]}")"
 unset _fmts _norm _f
 format_enabled() { [[ ",$FORMATS," == *",$1,"* ]]; }
+
+png_to_svg() {
+  local src="$1" dst="$2" display_w="$3" display_h="$4" dim iw ih
+  dim="$(magick identify -format '%wx%h' "$src")"
+  iw="${dim%x*}"; ih="${dim#*x}"
+  magick "$src" -alpha on -depth 8 txt:- | awk \
+    -v iw="$iw" -v ih="$ih" -v dw="$display_w" -v dh="$display_h" '
+    BEGIN {
+      print "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+      printf "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%s\" height=\"%s\" viewBox=\"0 0 %s %s\" shape-rendering=\"crispEdges\">\n", dw, dh, iw, ih
+    }
+    NR > 1 {
+      split($1, p, ","); x = p[1]; y = p[2]; sub(/:.*/, "", y)
+      if (match($0, /#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/))
+        rgba = toupper(substr($0, RSTART + 1, 8))
+      else if (match($0, /#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/))
+        rgba = toupper(substr($0, RSTART + 1, 6)) "FF"
+      else next
+      rgb = substr(rgba, 1, 6); alpha = substr(rgba, 7, 2)
+      if (alpha == "00") next
+      printf "  <rect x=\"%s\" y=\"%s\" width=\"1\" height=\"1\" fill=\"#%s\"", x, y, rgb
+      if (alpha != "FF") printf " fill-opacity=\"%.8f\"", (index("0123456789ABCDEF", substr(alpha,1,1))-1) * 16 / 255 + (index("0123456789ABCDEF", substr(alpha,2,1))-1) / 255
+      print "/>"
+    }
+    END { print "</svg>" }
+  ' > "$dst"
+}
 
 if (( THEMES_EXPLICIT )); then
   [[ -f "$THEMES" ]] || die "theme file not found: $THEMES"
@@ -792,6 +820,14 @@ build_variant() {
         fi
       fi
     fi
+    if format_enabled svg; then
+      png_to_svg "$one" "$vdir/${stem}_1x.svg" "${dim%x*}" "${dim#*x}"
+      echo "   + ${stem}_1x.svg  (native ${dim}, vector)"
+      if [[ "$SCALE" != "1" ]]; then
+        png_to_svg "$one" "$vdir/${stem}_${SCALE}x.svg" "$w" "$h"
+        echo "   + ${stem}_${SCALE}x.svg  (${w}x${h}, vector)"
+      fi
+    fi
     if format_enabled mov || format_enabled mp4; then
       echo "   . mov/mp4 skipped — $srcbase is a single frame"
     fi
@@ -799,6 +835,9 @@ build_variant() {
   fi
 
   local updir="" webp_up=0
+  if format_enabled svg; then
+    echo "   . svg skipped — $srcbase is animated"
+  fi
   if (( HAVE_WEBP_ANIM )) && [[ "$SCALE" != "1" ]]; then
     if (( w <= WEBP_MAX && h <= WEBP_MAX )); then
       webp_up=1
