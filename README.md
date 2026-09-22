@@ -57,6 +57,8 @@ repixel logo.png                          # preserve colors, rescale and export
 repixel logo.png -p gameboy               # one file, one theme/palette
 repixel a.png b.gif ~/sprites -p mono     # several inputs at once
 repixel ~/Desktop/sprites -p mono         # every image directly in a folder
+repixel ~/Desktop/sprites --formats svg   # every PNG in a folder to SVG
+repixel sprite@3x.png --formats svg --source-scale 3  # collapse 3x3 blocks
 repixel ~/Desktop/sprites -r -p mono      # ...and everything below it
 repixel logo.png -A                       # every theme in themes.conf
 repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
@@ -64,6 +66,7 @@ repixel logo.png -p lospec:nyx8           # any palette on lospec.com
 repixel logo.png -p @nyx8.hex             # a downloaded palette file
 pbpaste | repixel logo.png -p -           # a color list copied from anywhere
 repixel logo.png -p mono -x 8 -o ~/out    # scale 8x, custom output directory
+repixel ~/Desktop/sprites --formats svg --flat  # SVGs directly in ./out
 repixel clip.png -p mono --formats all    # include the ProRes master
 repixel clip.png -p mono -c 2,2,100,100   # crop a 98x98 box, then build
 repixel clip.png -p mono -s 157           # split at frame 157 -> 2 parts
@@ -80,13 +83,15 @@ repixel logo.png --list-colors            # show a source's shades
 | `--mix SPACE` | space in-between colors are blended in: `oklab` (default), `oklch`, `srgb`, `linear` |
 | `--sort MODE` | reorder a palette darkest → lightest: `auto` (default, imports only), `lum`, `none` |
 | `-o, --out DIR` | output directory (default `./out`, relative to the current directory) |
+| `--flat` | write generated files directly into the output directory |
 | `-r, --recursive` | recurse into directory inputs |
 | `-c, --crop BOX` | `XSTART,YSTART,XEND,YEND`, applied before everything else |
 | `-s, --split FRAMES` | comma-separated frame(s) to cut each clip at |
 | `-x, --scale N` | integer upscale factor, or `auto` (default) |
 | `--max-dim N` | ceiling for `auto` scale, long edge (default 2560) |
 | `-f, --fps N` | frames per second (default 12) |
-| `--formats LIST` | any of `mov,mp4,apng,webp`, or `all` (default `apng,webp,mp4`) |
+| `--formats LIST` | any of `mov,mp4,apng,webp,svg`, or `all` (default `apng,webp,mp4`) |
+| `--source-scale N` | input pixel block size for SVG conversion (default `1`) |
 | `--max-shades N` | refuse a source with more than N shades (default 64) |
 | `--themes FILE` | use a different theme file |
 | `--reextract` | force re-extraction of source frames |
@@ -106,14 +111,15 @@ skipped, so re-running `repixel . -r` in a folder you've built into won't feed
 the results back in.
 
 Two inputs with the same basename would share one output folder; repixel warns
-when that happens.
+when that happens. With `--flat`, filenames still include the source and palette
+names; duplicate source basenames may overwrite one another.
 
 ### Stills vs animations
 
 repixel detects this from the file — you don't pass a flag.
 
 - **Animated** input (APNG, GIF, animated WebP) → MP4, APNG, WebP
-- **Single-frame** input (an ordinary PNG) → PNG and WebP stills.
+- **Single-frame** input (an ordinary PNG) → PNG, WebP, and optional SVG stills.
 
 Everything else — recoloring, cropping, nearest-neighbor upscaling, theme
 matching — is identical either way.
@@ -216,6 +222,7 @@ Files land in `<out>/<source>/<theme>/`, e.g.
 | `..._<S>x.png` | same at the `--scale` factor (skipped when scale is 1) |
 | `..._1x.webp` | native resolution WebP |
 | `..._<S>x.webp` | WebP at the `--scale` factor |
+| `..._1x.svg` | pixel grid as vector rectangles (stills only) |
 
 ### Formats
 
@@ -223,6 +230,12 @@ Default formats are `apng,webp,mp4`.
 
 - `--formats mov` creates ProRes for video editing.
 - `--formats all` creates every format.
+- `--formats svg` converts still images to true vector pixel grids. One source
+  pixel equals one SVG unit, and the vector scales cleanly at any display size.
+  Animated inputs are skipped.
+- `--source-scale 3` treats each 3×3 nearest-neighbor block in the source as
+  one artwork pixel. It only affects SVG output; `-x` still controls raster
+  output scaling.
 - `png` is accepted as an alias for `apng`.
 - Invalid format names return an error.
 

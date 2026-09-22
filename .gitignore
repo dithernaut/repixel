@@ -1,6 +1,7 @@
 # Local input and output dirs
 src/
 out/
+out-*/
 
 # Legacy frame cache location.
 .cache/

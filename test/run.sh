@@ -334,6 +334,41 @@ check "--formats mov gives nothing else"  "no"  "$(hasglob "$O/anim/mono/*.mp4")
 O="$WORK/f4"; run "$FIX/anim.png" -p mono -o "$O" --formats png >/dev/null
 check "--formats png is accepted as apng" "yes" "$(has "$O/anim/mono/anim_mono_1x.png")"
 
+O="$WORK/f5"; run "$FIX/still4.png" -p mono -o "$O" --formats svg >/dev/null
+check "--formats svg writes native vector" "yes" "$(has "$O/still4/mono/still4_mono_1x.svg")"
+check "svg rasterizes with bit-exact colors" "000000,555555,AAAAAA,FFFFFF" \
+  "$(colors_of "$O/still4/mono/still4_mono_1x.svg")"
+check "svg stays at source dimensions" "32x8" \
+  "$(dims_of "$O/still4/mono/still4_mono_1x.svg")"
+check "svg has no redundant scaled copy" "no" \
+  "$(has "$O/still4/mono/still4_mono_16x.svg")"
+
+mkdir -p "$WORK/svg-batch"
+cp "$FIX/still2.png" "$WORK/svg-batch/a.png"
+cp "$FIX/still4.png" "$WORK/svg-batch/b.png"
+O="$WORK/f6"; run "$WORK/svg-batch" -o "$O" -x 1 --formats svg >/dev/null
+check "folder batch converts first PNG to SVG" "yes" "$(has "$O/a/original/a_original_1x.svg")"
+check "folder batch converts second PNG to SVG" "yes" "$(has "$O/b/original/b_original_1x.svg")"
+
+O="$WORK/f6-flat"; run "$WORK/svg-batch" -o "$O" -x 1 --formats svg --flat >/dev/null
+check "--flat puts first SVG directly in output" "yes" "$(has "$O/a_original_1x.svg")"
+check "--flat puts second SVG directly in output" "yes" "$(has "$O/b_original_1x.svg")"
+check "--flat creates no source subfolder" "no" "$(has "$O/a")"
+
+magick "$FIX/still4.png" -sample 96x24 "$WORK/still4@3x.png"
+O="$WORK/f6-source"; run "$WORK/still4@3x.png" -o "$O" --formats svg --source-scale 3 >/dev/null
+check "--source-scale 3 restores artwork dimensions" "32x8" \
+  "$(dims_of "$O/still4@3x/original/still4@3x_original_1x.svg")"
+check "--source-scale 3 preserves exact colors" "000000,555555,AAAAAA,FFFFFF" \
+  "$(colors_of "$O/still4@3x/original/still4@3x_original_1x.svg")"
+
+run "$FIX/still4.png" -o "$WORK/x" --formats svg --source-scale 3 >/dev/null 2>&1
+check "--source-scale must divide the source dimensions" "1" "$?"
+
+O="$WORK/f7"; OUT="$(run "$FIX/anim.png" -o "$O" --formats svg)"
+check "animated input skips svg" "yes" \
+  "$([[ "$OUT" == *"svg skipped"* && ! -e "$O/anim/original/anim_original_1x.svg" ]] && echo yes || echo no)"
+
 run "$FIX/still4.png" -p mono -o "$WORK/x" --formats nope >/dev/null 2>&1
 check "unknown format is rejected" "1" "$?"
 run "$FIX/still4.png" -p mono -o "$WORK/x" --fit sideways >/dev/null 2>&1
