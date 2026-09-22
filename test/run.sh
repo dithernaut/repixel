@@ -355,6 +355,16 @@ check "--flat puts first SVG directly in output" "yes" "$(has "$O/a_original_1x.
 check "--flat puts second SVG directly in output" "yes" "$(has "$O/b_original_1x.svg")"
 check "--flat creates no source subfolder" "no" "$(has "$O/a")"
 
+magick "$FIX/still4.png" -sample 96x24 "$WORK/still4@3x.png"
+O="$WORK/f6-source"; run "$WORK/still4@3x.png" -o "$O" --formats svg --source-scale 3 >/dev/null
+check "--source-scale 3 restores artwork dimensions" "32x8" \
+  "$(dims_of "$O/still4@3x/original/still4@3x_original_1x.svg")"
+check "--source-scale 3 preserves exact colors" "000000,555555,AAAAAA,FFFFFF" \
+  "$(colors_of "$O/still4@3x/original/still4@3x_original_1x.svg")"
+
+run "$FIX/still4.png" -o "$WORK/x" --formats svg --source-scale 3 >/dev/null 2>&1
+check "--source-scale must divide the source dimensions" "1" "$?"
+
 O="$WORK/f7"; OUT="$(run "$FIX/anim.png" -o "$O" --formats svg)"
 check "animated input skips svg" "yes" \
   "$([[ "$OUT" == *"svg skipped"* && ! -e "$O/anim/original/anim_original_1x.svg" ]] && echo yes || echo no)"

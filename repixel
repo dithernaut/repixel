@@ -18,6 +18,7 @@
 #   repixel logo.png -p dithernaut            # one file, one theme
 #   repixel a.png b.gif ~/sprites -p mono     # several inputs at once
 #   repixel ~/Desktop/sprites --formats svg   # every PNG in a folder -> SVG
+#   repixel sprite@3x.png --formats svg --source-scale 3
 #   repixel ~/Desktop/sprites -r -p mono      # a directory tree
 #   repixel logo.png -A                       # every theme in themes.conf
 #   repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
@@ -49,6 +50,7 @@
 #       --max-dim N      Ceiling for 'auto' scale, long edge (default 2560)
 #   -f, --fps N          Frames per second (default 12)
 #       --formats LIST   mov,mp4,apng,webp,svg, or all (default apng,webp,mp4)
+#       --source-scale N Input pixel block size for SVG (default 1)
 #       --max-shades N   Recolor limit (default 64); ignored without a palette
 #       --themes FILE    Use a different theme file
 #       --reextract      Force re-extraction of source frames
@@ -93,6 +95,7 @@ FIT="auto"
 MIX="oklab"
 SORT="auto"
 MAX_SHADES=64
+SOURCE_SCALE=1
 REEXTRACT=0
 THEMES_EXPLICIT=0
 
@@ -121,6 +124,7 @@ while [[ $# -gt 0 ]]; do
     --max-shades)   option_value "$@"; MAX_SHADES="$OPTION_VALUE"; shift 2;;
     -f|--fps)       option_value "$@"; FPS="$OPTION_VALUE"; shift 2;;
     --formats)      option_value "$@"; FORMATS="$OPTION_VALUE"; shift 2;;
+    --source-scale) option_value "$@"; SOURCE_SCALE="$OPTION_VALUE"; shift 2;;
     --themes)       option_value "$@"; THEMES="$OPTION_VALUE"; THEMES_EXPLICIT=1; shift 2;;
     --reextract)    REEXTRACT=1; shift;;
     --list-themes)  LIST_THEMES=1; shift;;
@@ -153,6 +157,7 @@ validate_choice --sort "$SORT" "auto lum none"
 validate_positive_integer --max-dim "$MAX_DIM"
 validate_positive_integer --max-shades "$MAX_SHADES"
 validate_positive_integer --fps "$FPS"
+validate_positive_integer --source-scale "$SOURCE_SCALE"
 
 FORMATS="$(echo "$FORMATS" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
 [[ "$FORMATS" == all ]] && FORMATS="mov,mp4,apng,webp,svg"
@@ -172,10 +177,13 @@ unset _fmts _norm _f
 format_enabled() { [[ ",$FORMATS," == *",$1,"* ]]; }
 
 png_to_svg() {
-  local src="$1" dst="$2" dim iw ih
+  local src="$1" dst="$2" dim source_w source_h iw ih
   dim="$(magick identify -format '%wx%h' "$src")"
-  iw="${dim%x*}"; ih="${dim#*x}"
-  magick "$src" -alpha on -depth 8 txt:- | awk \
+  source_w="${dim%x*}"; source_h="${dim#*x}"
+  (( source_w % SOURCE_SCALE == 0 && source_h % SOURCE_SCALE == 0 )) \
+    || die "--source-scale $SOURCE_SCALE does not divide ${source_w}x${source_h}: $src"
+  iw=$(( source_w / SOURCE_SCALE )); ih=$(( source_h / SOURCE_SCALE ))
+  magick "$src" -sample "${iw}x${ih}!" -alpha on -depth 8 txt:- | awk \
     -v iw="$iw" -v ih="$ih" '
     BEGIN {
       print "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"

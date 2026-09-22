@@ -58,6 +58,7 @@ repixel logo.png -p gameboy               # one file, one theme/palette
 repixel a.png b.gif ~/sprites -p mono     # several inputs at once
 repixel ~/Desktop/sprites -p mono         # every image directly in a folder
 repixel ~/Desktop/sprites --formats svg   # every PNG in a folder to SVG
+repixel sprite@3x.png --formats svg --source-scale 3  # collapse 3x3 blocks
 repixel ~/Desktop/sprites -r -p mono      # ...and everything below it
 repixel logo.png -A                       # every theme in themes.conf
 repixel logo.png -p 171F41,2F7077,FB6C76,FEEDE3   # one-off colors
@@ -90,6 +91,7 @@ repixel logo.png --list-colors            # show a source's shades
 | `--max-dim N` | ceiling for `auto` scale, long edge (default 2560) |
 | `-f, --fps N` | frames per second (default 12) |
 | `--formats LIST` | any of `mov,mp4,apng,webp,svg`, or `all` (default `apng,webp,mp4`) |
+| `--source-scale N` | input pixel block size for SVG conversion (default `1`) |
 | `--max-shades N` | refuse a source with more than N shades (default 64) |
 | `--themes FILE` | use a different theme file |
 | `--reextract` | force re-extraction of source frames |
@@ -231,6 +233,9 @@ Default formats are `apng,webp,mp4`.
 - `--formats svg` converts still images to true vector pixel grids. One source
   pixel equals one SVG unit, and the vector scales cleanly at any display size.
   Animated inputs are skipped.
+- `--source-scale 3` treats each 3×3 nearest-neighbor block in the source as
+  one artwork pixel. It only affects SVG output; `-x` still controls raster
+  output scaling.
 - `png` is accepted as an alias for `apng`.
 - Invalid format names return an error.
 
