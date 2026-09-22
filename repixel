@@ -25,6 +25,7 @@
 #   repixel logo.png -p @nyx8.hex             # a downloaded palette file
 #   pbpaste | repixel logo.png -p -           # paste a copied color list
 #   repixel logo.png -p mono -x 8 -o ~/out    # scale 8x, custom output dir
+#   repixel ~/sprites --formats svg --flat     # SVGs directly in ./out
 #   repixel clip.png -p mono --formats all    # include the ProRes master
 #   repixel clip.png -p mono -c 2,2,100,100   # crop a 98x98 box, then build
 #   repixel clip.png -p mono -s 157           # split at frame 157
@@ -40,6 +41,7 @@
 #       --mix SPACE      Blend space: oklab (default), oklch, srgb, linear
 #       --sort MODE      Palette order: auto (default), lum, none
 #   -o, --out DIR        Output directory (default: ./out)
+#       --flat           Write files directly into the output directory
 #   -r, --recursive      Recurse into directory inputs
 #   -c, --crop BOX       Crop the source to XSTART,YSTART,XEND,YEND
 #   -s, --split FRAMES   Comma-separated frame(s) to split each clip at
@@ -76,6 +78,7 @@ CACHEROOT="${XDG_CACHE_HOME:-$HOME/.cache}/repixel"
 
 INPUTS=()
 OUTDIR="out"
+FLAT=0
 RECURSIVE=0
 SCALE_OPT="auto"   # 'auto' or an integer; the per-source factor lands in SCALE
 SCALE=16
@@ -109,6 +112,7 @@ while [[ $# -gt 0 ]]; do
     --mix)          option_value "$@"; MIX="$OPTION_VALUE"; shift 2;;
     --sort)         option_value "$@"; SORT="$OPTION_VALUE"; shift 2;;
     -o|--out)       option_value "$@"; OUTDIR="$OPTION_VALUE"; shift 2;;
+    --flat)          FLAT=1; shift;;
     -r|--recursive) RECURSIVE=1; shift;;
     -c|--crop)      option_value "$@"; CROP="$OPTION_VALUE"; shift 2;;
     -s|--split)     option_value "$@"; SPLIT="$OPTION_VALUE"; shift 2;;
@@ -168,14 +172,14 @@ unset _fmts _norm _f
 format_enabled() { [[ ",$FORMATS," == *",$1,"* ]]; }
 
 png_to_svg() {
-  local src="$1" dst="$2" display_w="$3" display_h="$4" dim iw ih
+  local src="$1" dst="$2" dim iw ih
   dim="$(magick identify -format '%wx%h' "$src")"
   iw="${dim%x*}"; ih="${dim#*x}"
   magick "$src" -alpha on -depth 8 txt:- | awk \
-    -v iw="$iw" -v ih="$ih" -v dw="$display_w" -v dh="$display_h" '
+    -v iw="$iw" -v ih="$ih" '
     BEGIN {
       print "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-      printf "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%s\" height=\"%s\" viewBox=\"0 0 %s %s\" shape-rendering=\"crispEdges\">\n", dw, dh, iw, ih
+      printf "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%s\" height=\"%s\" viewBox=\"0 0 %s %s\" shape-rendering=\"crispEdges\">\n", iw, ih, iw, ih
     }
     NR > 1 {
       split($1, p, ","); x = p[1]; y = p[2]; sub(/:.*/, "", y)
@@ -786,7 +790,9 @@ build_variant() {
   dim="$(magick identify -format '%wx%h' "$(ls "$fdir"/*.png | head -1)")"
   w=$(( ${dim%x*} * SCALE )); h=$(( ${dim#*x} * SCALE ))
 
-  local vdir="$OUTDIR/$srcbase/$name"; mkdir -p "$vdir"
+  local vdir="$OUTDIR/$srcbase/$name"
+  (( FLAT )) && vdir="$OUTDIR"
+  mkdir -p "$vdir"
   local stem="${srcbase}_${name}"
   # rgba prevents swscale from shifting pal8 colors by one.
   local vf="format=rgba,scale=iw*${SCALE}:ih*${SCALE}:flags=neighbor"
@@ -821,12 +827,8 @@ build_variant() {
       fi
     fi
     if format_enabled svg; then
-      png_to_svg "$one" "$vdir/${stem}_1x.svg" "${dim%x*}" "${dim#*x}"
+      png_to_svg "$one" "$vdir/${stem}_1x.svg"
       echo "   + ${stem}_1x.svg  (native ${dim}, vector)"
-      if [[ "$SCALE" != "1" ]]; then
-        png_to_svg "$one" "$vdir/${stem}_${SCALE}x.svg" "$w" "$h"
-        echo "   + ${stem}_${SCALE}x.svg  (${w}x${h}, vector)"
-      fi
     fi
     if format_enabled mov || format_enabled mp4; then
       echo "   . mov/mp4 skipped — $srcbase is a single frame"
@@ -919,7 +921,11 @@ while IFS= read -r srcf; do
   FOUND=1
   srcbase="$(basename "${srcf%.*}")"
   if [[ "$SEEN_BASES" == *" $srcbase "* ]]; then
-    echo ">> warn  $srcf — another input is also named '$srcbase'; they share $OUTDIR/$srcbase" >&2
+    if (( FLAT )); then
+      echo ">> warn  $srcf — another input is also named '$srcbase'; flat outputs may overwrite" >&2
+    else
+      echo ">> warn  $srcf — another input is also named '$srcbase'; they share $OUTDIR/$srcbase" >&2
+    fi
   fi
   SEEN_BASES="${SEEN_BASES}${srcbase} "
   # `if ! cmd` would lose the original status.

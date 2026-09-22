@@ -65,6 +65,7 @@ repixel logo.png -p lospec:nyx8           # any palette on lospec.com
 repixel logo.png -p @nyx8.hex             # a downloaded palette file
 pbpaste | repixel logo.png -p -           # a color list copied from anywhere
 repixel logo.png -p mono -x 8 -o ~/out    # scale 8x, custom output directory
+repixel ~/Desktop/sprites --formats svg --flat  # SVGs directly in ./out
 repixel clip.png -p mono --formats all    # include the ProRes master
 repixel clip.png -p mono -c 2,2,100,100   # crop a 98x98 box, then build
 repixel clip.png -p mono -s 157           # split at frame 157 -> 2 parts
@@ -81,6 +82,7 @@ repixel logo.png --list-colors            # show a source's shades
 | `--mix SPACE` | space in-between colors are blended in: `oklab` (default), `oklch`, `srgb`, `linear` |
 | `--sort MODE` | reorder a palette darkest → lightest: `auto` (default, imports only), `lum`, `none` |
 | `-o, --out DIR` | output directory (default `./out`, relative to the current directory) |
+| `--flat` | write generated files directly into the output directory |
 | `-r, --recursive` | recurse into directory inputs |
 | `-c, --crop BOX` | `XSTART,YSTART,XEND,YEND`, applied before everything else |
 | `-s, --split FRAMES` | comma-separated frame(s) to cut each clip at |
@@ -107,7 +109,8 @@ skipped, so re-running `repixel . -r` in a folder you've built into won't feed
 the results back in.
 
 Two inputs with the same basename would share one output folder; repixel warns
-when that happens.
+when that happens. With `--flat`, filenames still include the source and palette
+names; duplicate source basenames may overwrite one another.
 
 ### Stills vs animations
 
@@ -218,7 +221,6 @@ Files land in `<out>/<source>/<theme>/`, e.g.
 | `..._1x.webp` | native resolution WebP |
 | `..._<S>x.webp` | WebP at the `--scale` factor |
 | `..._1x.svg` | pixel grid as vector rectangles (stills only) |
-| `..._<S>x.svg` | same vector with scaled display dimensions |
 
 ### Formats
 
@@ -226,7 +228,9 @@ Default formats are `apng,webp,mp4`.
 
 - `--formats mov` creates ProRes for video editing.
 - `--formats all` creates every format.
-- `--formats svg` converts still images to true vector pixel grids. Animated inputs are skipped.
+- `--formats svg` converts still images to true vector pixel grids. One source
+  pixel equals one SVG unit, and the vector scales cleanly at any display size.
+  Animated inputs are skipped.
 - `png` is accepted as an alias for `apng`.
 - Invalid format names return an error.
 
